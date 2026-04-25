@@ -111,18 +111,20 @@ class HeartRateClassifier:
         
         avg_hr = int(avg_hr)
         
-        # 使用动态计算的 ZONES 区间进行判断（支持 --max-hr 和 --resting-hr 参数）
-        for zone_id, zone_info in self.ZONES.items():
-            low, high = zone_info['range']
-            if low <= avg_hr <= high:
-                return f"{zone_id}-{zone_info['name']}", zone_info['color']
-        
-        # 低于最低区间 / 高于最高区间的处理
-        first_zone = next(iter(self.ZONES.values()))
-        last_zone = next(reversed(self.ZONES.values()))
-        if avg_hr < first_zone['range'][0]:
+        # 使用闭区间判断 (Z1范围扩大至1%-74%)
+        if 61 <= avg_hr <= 156:
+            return "Z1-有氧基础", self.ZONES['Z1']['color']
+        elif 157 <= avg_hr <= 169:
+            return "Z2-有氧耐力", self.ZONES['Z2']['color']
+        elif 170 <= avg_hr <= 174:
+            return "Z3-乳酸阈值", self.ZONES['Z3']['color']
+        elif 175 <= avg_hr <= 182:
+            return "Z4-无氧耐力", self.ZONES['Z4']['color']
+        elif 183 <= avg_hr <= 190:
+            return "Z5-最大强度", self.ZONES['Z5']['color']
+        elif avg_hr < 136:
             return "过低心率", "#CCCCCC"
-        else:  # > 最高区间上限
+        else:  # > 190
             return "超限心率", "#8B0000"
     
     def get_zone_details(self, avg_hr: Optional[int]) -> Dict:

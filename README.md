@@ -2,6 +2,17 @@
 
 > 整合 Garmin Connect (China) 数据获取 + 跑步数据分析 + 可视化报告生成
 
+**版本**: v2.0 (2026-04-25)
+
+## 🚀 版本 2.0 新特性
+
+- **⚡ 功率数据分析**: 支持Garmin功率数据，生成功率分布图
+- **👟 步频与垂直振幅**: 完整支持步频(spm)和垂直振幅比(%)分析
+- **🛡️ 安全增强**: XSS防护、安全token存储、HTML转义
+- **📁 智能文件管理**: 主报告`PowerFun.html` + 自动备份策略
+- **🎯 精准心率区间**: 动态计算心率区间，支持自定义最大/静息心率
+- **📱 移动端优化**: 响应式HTML报告，表格标题智能截断(25字符)
+
 ## 功能特性
 
 - **🔐 自动登录**: Garmin Connect China 区域 SSO 登录
@@ -24,17 +35,20 @@ pip install -r requirements.txt
 ### 运行
 
 ```bash
-# 基本用法（拉取最近 30 天）
+# 首次运行（需要账号密码）
 python main.py --email your_email@example.com --password your_password
 
-# 拉取 90 天数据
-python main.py --email your_email@example.com --password your_password --days 90
+# 后续运行（使用已保存的token）
+python main.py
+
+# 拉取指定天数数据
+python main.py --days 90
 
 # 指定最大心率（用于心率区间计算）
-python main.py --email your_email@example.com --password your_password --max-hr 180
+python main.py --max-hr 180 --resting-hr 60
 
 # 仅拉取数据，不生成报告
-python main.py --email your_email@example.com --password your_password --dry-run
+python main.py --dry-run
 ```
 
 ## 项目结构
@@ -82,9 +96,11 @@ Garmin API → DataFetcher → DataProcessor → Analyzer → Visualizer → Rep
 
 ## 输出
 
-- **HTML 报告**: `~/.powerfun/reports/powerfun_report_YYYYMMDD_HHMMSS.html`
+- **主HTML报告**: `/Users/jarvis/Documents/Run/PowerFun.html`
+- **自动备份**: `/Users/jarvis/Documents/Run/PowerFun_Reports/PowerFun_backup_*.html`
+- **清洗后CSV**: `/Users/jarvis/Documents/Run/running_data_cleaned.csv`
+- **原始活动数据**: `/Users/jarvis/Documents/Run/all_running_activities.json`
 - **状态文件**: `~/.powerfun/last_fetch.json`
-- **JSON 数据**: 可选 `--json-out` 参数导出
 
 ## 注意事项
 

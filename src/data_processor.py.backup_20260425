@@ -70,16 +70,12 @@ class DataProcessor:
         return df
 
     def _map_activity(self, activity: dict) -> dict:
-        """将单条活动映射为标准字段（支持两种格式: garth API / garmer）"""
-        try:
-            return self._map_activity_impl(activity)
-        except Exception as e:
-            act_name = activity.get("activityName") or activity.get("activity_name", "未知")
-            logger.warning(f"处理活动数据异常 [{act_name}]: {e}，跳过此条活动")
-            return {}
+        """将单条活动映射为标准字段
 
-    def _map_activity_impl(self, activity: dict) -> dict:
-        """_map_activity 的实际实现"""
+        支持两种格式:
+        1. garth API 格式: startTimeLocal, distance, duration 等直接在顶层
+        2. garmer 格式: 顶层字段可能为 0，实际数据在 raw_data.summaryDTO 中
+        """
         record = {}
 
         # 先尝试从 summaryDTO 提取数据 (garmer 格式)
@@ -183,6 +179,24 @@ class DataProcessor:
         garth connectapi 返回的字段名与 config 中的 source 不完全一致，
         需要做字段名映射和类型转换。
         """
+        # garth API 字段名 -> config source 的映射
+        garth_to_source = {
+            "startTimeLocal": "startTimeLocal",
+            "activityName": "activityName",
+            "distance": "distance_km",        # garth 返回 meters
+            "duration": "elapsed_min",         # garth 返回 seconds
+            "averageHR": "avg_hr",
+            "maxHR": "max_hr",
+            "averageSpeed": "maxSpeed",        # 用 avgSpeed 近似
+            "maxSpeed": "maxSpeed",            # garth 返回 m/s
+            "calories": "calories",
+            "averageRunningCadence": "avg_cadence",
+            "averageRunCadence": "avg_cadence",
+            "verticalRatio": "verticalRatio",
+            "averagePower": "avg_power",
+            "elevationGain": "elevation_gain_m",
+        }
+
         # source -> garth API 字段名 (手动反向映射，避免字典覆盖问题)
         source_to_garth = {
             "startTimeLocal": "startTimeLocal",

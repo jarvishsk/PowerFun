@@ -50,6 +50,7 @@ class GarminDataFetcher:
         self._token_file = token_file
         self._token_path = self._token_dir / self._token_file
         self._state_file = Path(state_file or DEFAULT_CONFIG["state_file"]).expanduser()
+        self._activities_cache = self._state_file.parent / "activities_cache.json"
 
         # 确保目录存在
         self._token_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +281,19 @@ class GarminDataFetcher:
                     "last_fetch": datetime.now().isoformat(),
                     "total_count": len(all_activities),
                 })
+            # 保存活动到本地缓存（增量合并）
+            self._save_cache(all_activities)
+
+        # 合并缓存数据：增量拉取 + 本地缓存
+        cached = self._load_cache()
+        if cached:
+            def _get_id(a):
+                return a.get("activity_id") or a.get("activityId")
+            existing_ids = {_get_id(a) for a in all_activities if isinstance(a, dict)}
+            for a in cached:
+                if isinstance(a, dict) and _get_id(a) not in existing_ids:
+                    all_activities.append(a)
+            logger.info(f"✅ 合并缓存: {len(all_activities)} 条")
 
         return all_activities
 
@@ -343,6 +357,49 @@ class GarminDataFetcher:
         """写入状态文件"""
         with open(self._state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def _save_cache(self, activities: list[dict]) -> None:
+        """保存活动到本地缓存（增量合并）"""
+        # 加载已有缓存
+        cached = []
+        if self._activities_cache.exists():
+            try:
+                with open(self._activities_cache, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                cached = []
+
+        # 合并去重（兼容 activityId 和 activity_id 两种字段名）
+        def _get_id(a):
+            return a.get("activity_id") or a.get("activityId")
+
+        existing_ids = {_get_id(a) for a in cached if isinstance(a, dict)}
+        new_count = 0
+        for a in activities:
+            aid = _get_id(a)
+            if isinstance(a, dict) and aid not in existing_ids:
+                cached.append(a)
+                existing_ids.add(aid)
+                new_count += 1
+
+        # 按时间排序（最新在前）
+        cached.sort(key=lambda x: _get_id(x) or 0, reverse=True)
+
+        with open(self._activities_cache, "w", encoding="utf-8") as f:
+            json.dump(cached, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"缓存已保存: {len(cached)} 条活动（新增 {new_count} 条）")
+
+    def _load_cache(self) -> list[dict]:
+        """加载本地缓存的活动数据"""
+        if not self._activities_cache.exists():
+            return []
+        try:
+            with open(self._activities_cache, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"读取缓存失败: {e}")
+            return []
 
     # ----------------------------------------------------------
     # 辅助方法

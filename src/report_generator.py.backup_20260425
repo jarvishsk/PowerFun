@@ -3,7 +3,6 @@
 使用Jinja2模板生成自包含HTML报告
 """
 
-import html
 import json
 import os
 from datetime import datetime, timedelta
@@ -209,20 +208,20 @@ class ReportGenerator:
                          current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
                          has_training_effect, has_power) -> str:
         """不使用Jinja2的渲染（直接字符串替换）"""
-        # 构建HTML各部分（对所有用户数据进行html.escape防XSS）
+        # 构建HTML各部分
         insights_html = '\n'.join([
-            f'<div class="insight-card {html.escape(i["type"])}">'
-            f'<div class="icon">{html.escape(i["icon"])}</div>'
-            f'<div class="title">{html.escape(i["title"])}</div>'
-            f'<div class="message">{html.escape(i["message"])}</div></div>'
+            f'<div class="insight-card {i["type"]}">'
+            f'<div class="icon">{i["icon"]}</div>'
+            f'<div class="title">{i["title"]}</div>'
+            f'<div class="message">{i["message"]}</div></div>'
             for i in insights
         ])
 
         table_html = '\n'.join([
-            f'<tr><td>{html.escape(r["date"])}</td><td>{html.escape(r["title"])}</td>'
-            f'<td><span class="category-badge" style="background-color:{html.escape(r["category_color"])}">{html.escape(r["category"])}</span></td>'
-            f'<td>{html.escape(r["distance"])}</td><td>{html.escape(r["pace"])}</td><td>{html.escape(r["hr"])}</td>'
-            f'<td>{html.escape(r["power"])}</td><td>{html.escape(r["cadence"])}</td></tr>'
+            f'<tr><td>{r["date"]}</td><td>{r["title"]}</td>'
+            f'<td><span class="category-badge" style="background-color:{r["category_color"]}">{r["category"]}</span></td>'
+            f'<td>{r["distance"]}</td><td>{r["pace"]}</td><td>{r["hr"]}</td>'
+            f'<td>{r["power"]}</td><td>{r["cadence"]}</td></tr>'
             for r in table_data
         ])
 

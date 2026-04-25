@@ -126,8 +126,8 @@ class ChartGenerator:
                 else:
                     cat_df = range_df[range_df['category'] == cat]
                 
-                # 默认显示：有氧耐力 + 全部
-                is_visible = (cat == 'aerobic_run' and date_range == 'all')
+                # 默认显示：轻松跑 + 全部
+                is_visible = (cat == 'easy_run' and date_range == 'all')
                 
                 if len(cat_df) > 0:
                     # 添加配速格式化列
@@ -136,24 +136,26 @@ class ChartGenerator:
                     
                     # 配速曲线 - hover显示分:秒格式
                     fig.add_trace(go.Scatter(
-                        x=cat_df['date_str'].tolist(),
+                        x=cat_df['date'].tolist(),
                         y=cat_df['avg_pace_sec'].tolist(),
                         mode='lines+markers',
                         name=f"{cat_name}",
                         line=dict(color=color, width=2),
+                        line_shape='linear',
                         marker=dict(size=8, color=color),
                         visible=is_visible,
-                        hovertemplate="<b>%{customdata[0]}</b><br>日期: %{x}<br>配速: %{customdata[1]}<extra></extra>",
-                        customdata=np.stack([cat_df['title'].values, cat_df['pace_fmt'].values], axis=-1)
+                        hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>配速: %{customdata[2]}<extra></extra>",
+                        customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values, cat_df['pace_fmt'].values], axis=-1)
                     ), secondary_y=False)
                     
                     # 心率曲线
                     fig.add_trace(go.Scatter(
-                        x=cat_df['date_str'].tolist(),
+                        x=cat_df['date'].tolist(),
                         y=cat_df['avg_hr'].tolist(),
                         mode='lines+markers',
                         name=f"{cat_name} - 心率",
                         line=dict(color=color, width=2, dash='dash'),
+                        line_shape='linear',
                         marker=dict(size=6, color=color, symbol='diamond'),
                         visible=is_visible,
                         hovertemplate="<b>%{customdata}</b><br>日期: %{x}<br>心率: %{y} bpm<extra></extra>",
@@ -176,65 +178,48 @@ class ChartGenerator:
             visible[start_idx + 1] = True
             return visible
         
+        # 把可见性矩阵作为图表数据的一部分返回
+        cat_labels = ['轻松跑', '有氧耐力', 'LSD', '比赛']
+        date_labels = ['全部', '近一年', '今年以来', '近半年', '近三个月']
+        
+        visibility_matrix = {}
+        for cat_idx in range(len(cat_labels)):
+            for date_idx in range(len(date_labels)):
+                key = f"{cat_idx}_{date_idx}"
+                visibility_matrix[key] = make_visible(cat_idx, date_idx)
+        
         fig.update_layout(
             title=None,
             xaxis=dict(
-                tickangle=-90,  # 竖排显示（右转90度）
-                type='category'
+                tickangle=-90,
+                type='date',
+                tickformat='%m-%d'
             ),
             yaxis=dict(
                 title='配速',
                 autorange='reversed',
                 tickformat='%M:%S',
                 tickmode='array',
-                tickvals=[300, 360, 420, 480, 540, 600],
-                ticktext=['5:00', '6:00', '7:00', '8:00', '9:00', '10:00']
+                tickvals=[315, 330, 345, 360, 375, 390, 405, 420, 435, 450, 465, 480],
+                ticktext=['5:15', '5:30', '5:45', '6:00', '6:15', '6:30', '6:45', '7:00', '7:15', '7:30', '7:45', '8:00']
             ),
             yaxis2=dict(title='心率 (bpm)', range=[100, 200]),
             legend=dict(orientation='h', yanchor='bottom', y=1.15, xanchor='center', x=0.5),
             hovermode='x unified',
             template='plotly_white',
             height=500,
-            # 增加顶部和左侧margin，给按钮留出空间
             margin=dict(l=80, r=60, t=120, b=80),
-            updatemenus=[
-                # 类型筛选按钮（图表上方外部）
-                dict(
-                    type='buttons',
-                    direction='right',
-                    x=0.5,
-                    y=1.08,  # 放到图表外面
-                    xanchor='center',
-                    yanchor='bottom',
-                    showactive=True,
-                    buttons=list([
-                        dict(label='轻松跑', method='update', args=[{'visible': make_visible(0, 0)}]),
-                        dict(label='有氧耐力', method='update', args=[{'visible': make_visible(1, 0)}]),
-                        dict(label='LSD', method='update', args=[{'visible': make_visible(2, 0)}]),
-                        dict(label='比赛', method='update', args=[{'visible': make_visible(3, 0)}]),
-                    ])
-                ),
-                # 日期筛选按钮（图表左侧外部）
-                dict(
-                    type='buttons',
-                    direction='down',
-                    x=-0.08,  # 放到图表外面
-                    y=1.0,
-                    xanchor='right',
-                    yanchor='top',
-                    showactive=True,
-                    buttons=list([
-                        dict(label='全部', method='update', args=[{'visible': make_visible(1, 0)}]),
-                        dict(label='近一年', method='update', args=[{'visible': make_visible(1, 1)}]),
-                        dict(label='今年以来', method='update', args=[{'visible': make_visible(1, 2)}]),
-                        dict(label='近半年', method='update', args=[{'visible': make_visible(1, 3)}]),
-                        dict(label='近三个月', method='update', args=[{'visible': make_visible(1, 4)}]),
-                    ])
-                )
-            ]
         )
         
-        return self._to_js_dict(fig.to_dict())
+        fig_dict = fig.to_dict()
+        # 把筛选数据放在顶层，不放在 layout 中
+        fig_dict['_pace_hr_filter'] = {
+            'cat_labels': cat_labels,
+            'date_labels': date_labels,
+            'visibility_matrix': visibility_matrix
+        }
+        
+        return self._to_js_dict(fig_dict)
     
     def create_monthly_volume_chart(self, df: pd.DataFrame) -> Dict:
         """创建月跑量柱状图 - yy-mm格式"""
@@ -468,14 +453,14 @@ class ChartGenerator:
     def create_distance_trend_chart(self, df: pd.DataFrame) -> Dict:
         """
         创建距离趋势图
-        - 散点图 + 移动平均线
+        - 散点图 + 移动平均线（x轴使用实际日期，自动按时间排序）
         - 按分类着色
         """
         if df.empty:
             return {}
 
         df = df.copy().sort_values('date')
-        df['date_str'] = df['date'].dt.strftime('%m-%d')
+        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
 
         fig = go.Figure()
 
@@ -502,30 +487,30 @@ class ChartGenerator:
             name = cat_name_map.get(cat, cat)
 
             fig.add_trace(go.Scatter(
-                x=cat_df['date_str'].tolist(),
+                x=cat_df['date'].tolist(),
                 y=cat_df['distance'].tolist(),
                 mode='markers',
                 name=name,
                 marker=dict(color=color, size=10, symbol='circle'),
-                hovertemplate="<b>%{customdata[0]}</b><br>日期: %{x}<br>距离: %{y:.1f} km<extra></extra>",
-                customdata=np.stack([cat_df['title'].values, cat_df['avg_pace_fmt'].values], axis=-1)
+                hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>距离: %{y:.1f} km<extra></extra>",
+                customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values], axis=-1)
             ))
 
         # 移动平均线（窗口=5）
         if len(df) >= 5:
             rolling_avg = df['distance'].rolling(window=5, center=True).mean()
             fig.add_trace(go.Scatter(
-                x=df['date_str'].tolist(),
+                x=df['date'].tolist(),
                 y=rolling_avg.tolist(),
                 mode='lines',
                 name='5次移动平均',
-                line=dict(color='#FF6B6B', width=3, dash='dash'),
-                hovertemplate="移动平均: %{y:.1f} km<extra></extra>"
+                line=dict(color='#FF6B6B', width=2, dash='dash'),
+                hovertemplate="日期: %{x|%Y-%m-%d}<br>移动平均: %{y:.1f} km<extra></extra>"
             ))
 
         fig.update_layout(
             title=None,
-            xaxis=dict(tickangle=-90, title=None, type='category'),
+            xaxis=dict(tickangle=-45, title=None, type='date', tickformat='%m-%d'),
             yaxis=dict(title='距离 (km)'),
             template='plotly_white',
             height=400,
@@ -630,9 +615,11 @@ class ChartGenerator:
         median_power = power_data.median()
 
         fig.add_vline(x=mean_power, line_dash="dash", line_color="#FF6B6B",
-                      annotation_text=f"平均: {mean_power:.0f}W")
+                      annotation_text=f"平均: {mean_power:.0f}W",
+                      annotation_position="top right")
         fig.add_vline(x=median_power, line_dash="dot", line_color="#32CD32",
-                      annotation_text=f"中位数: {median_power:.0f}W")
+                      annotation_text=f"中位数: {median_power:.0f}W",
+                      annotation_position="top left")
 
         fig.update_layout(
             title=None,
@@ -640,8 +627,15 @@ class ChartGenerator:
             yaxis=dict(title='次数'),
             template='plotly_white',
             height=400,
-            margin=dict(l=60, r=40, t=40, b=60),
-            bargap=0.05
+            margin=dict(l=60, r=80, t=80, b=60),  # 增加右边和顶部边距
+            bargap=0.05,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
         )
 
         return self._to_js_dict(fig.to_dict())

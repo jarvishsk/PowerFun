@@ -2,7 +2,6 @@
 
 定义字段映射表、心率区间、默认参数等。
 """
-from pathlib import Path
 
 # ============================================================
 # 字段映射：跑分期望字段 -> Garmer API 实际字段 + 转换逻辑
@@ -123,7 +122,7 @@ PACE_LEVELS = {
 DEFAULT_CONFIG = {
     'data_dir': '~/.powerfun/data',
     'state_file': '~/.powerfun/last_fetch.json',
-    'report_dir': str(Path.home() / 'Documents' / 'Run'),
+    'report_dir': '/Users/jarvis/Documents/Run',
     'cache_dir': '~/.powerfun/cache',
     'max_retries': 3,
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时

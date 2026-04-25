@@ -215,6 +215,35 @@ def main():
 
     logger.info(f"✅ 有效记录: {len(df)} 条")
 
+    # ----------------------------------------------------------
+    # Step 3.5: 过滤数据
+    # ----------------------------------------------------------
+    logger.info("Step 3.5/7: 过滤数据...")
+    
+    # 距离过滤（排除 > 50km）
+    dist_mask = df['distance'] <= 50
+    dist_excluded = int((~dist_mask).sum())
+    
+    # 标题过滤（排除包含"间歇跑"的活动）
+    title_mask = ~df['title'].str.contains('间歇跑', na=False)
+    title_excluded = int((~title_mask).sum())
+    
+    # 合并过滤
+    df = df[dist_mask & title_mask].copy()
+    total_excluded = dist_excluded + title_excluded
+    
+    if total_excluded > 0:
+        logger.info(f"已排除 {total_excluded} 条数据（{dist_excluded} 条超长距离，{title_excluded} 条间歇训练）")
+        logger.info(f"✅ 过滤后有效记录: {len(df)} 条")
+    else:
+        logger.info("无需过滤")
+    
+    if df.empty:
+        logger.warning("过滤后无有效记录，退出")
+        if not args.test_data:
+            fetcher.close()
+        sys.exit(0)
+
     # 可选: 输出 JSON
     if args.json_out:
         json_path = Path(args.json_out)
@@ -224,8 +253,8 @@ def main():
         df_out.to_json(json_path, orient="records", force_ascii=False, indent=2)
         logger.info(f"JSON 数据已保存: {json_path}")
 
-    # 可选: 输出 CSV
-    csv_path = output_dir / f"running_data_{datetime.now().strftime('%Y%m%d')}.csv"
+    # 可选: 输出 CSV (固定文件名)
+    csv_path = output_dir / "running_data_cleaned.csv"
     processor.to_csv(df, str(csv_path))
 
     # ----------------------------------------------------------
@@ -268,11 +297,26 @@ def main():
 
     # 生成 HTML 报告
     report_gen = ReportGenerator()
-    output_file = str(output_dir / f"Running_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
-    report_gen.generate_html(df, charts_data, stats, output_file)
-
+    
+    # 实现 PowerFun 报告命名策略
+    main_report_path = str(output_dir / "PowerFun.html")
+    backup_dir = output_dir / "PowerFun_Reports"
+    
+    # 创建备份目录
+    backup_dir.mkdir(exist_ok=True)
+    
+    # 如果存在旧的主报告，备份它
+    if os.path.exists(main_report_path):
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_path = str(backup_dir / f"PowerFun_backup_{timestamp}.html")
+        os.rename(main_report_path, backup_path)
+        logger.info(f"已备份旧报告: {backup_path}")
+    
+    # 生成新报告作为主报告
+    report_gen.generate_html(df, charts_data, stats, main_report_path)
+    
     logger.info("=" * 60)
-    logger.info(f"✅ 报告已生成: {output_file}")
+    logger.info(f"✅ 主报告已生成: {main_report_path}")
     logger.info("=" * 60)
 
     # 打印摘要
