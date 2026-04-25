@@ -17,7 +17,7 @@
 - 🧹 **数据清洗**: 字段映射、类型转换、异常检测
 - ❤️ **心率区间**: Z1-Z5 五区间分析
 - ⏱️ **配速趋势**: 移动平均、趋势判断
-- 📈 **可视化**: Plotly 交互式仪表盘
+- 📈 **可视化**: 9个Plotly交互式图表（含功率分布、心率分布等）
 - 📄 **HTML 报告**: 完整跑步分析报告
 
 ## 安装
@@ -50,19 +50,20 @@ python main.py --email YOUR_EMAIL --password YOUR_PASSWORD --json-out data.json
 
 ```
 PowerFun/
-├── main.py                 # 主程序入口
-├── requirements.txt        # 依赖
-├── SKILL.md               # 技能说明
+├── main.py                 # 主程序入口（7步流程）
+├── requirements.txt        # Python依赖
+├── SKILL.md               # OpenClaw技能说明
 ├── README.md              # 项目文档
+├── VERSION                # 版本文件
 ├── .gitignore
 └── src/
     ├── __init__.py
-    ├── config.py           # 字段映射 + 配置
-    ├── data_fetcher.py     # Garmin 数据获取
-    ├── data_processor.py   # 数据清洗 + 字段映射
-    ├── analyzer.py         # 心率区间分析
-    ├── visualizer.py       # Plotly 图表生成
-    └── report_generator.py # HTML 报告
+    ├── config.py           # 字段映射 + 心率区间 + 默认配置
+    ├── data_fetcher.py     # Garmin Connect API 数据获取
+    ├── data_processor.py   # 数据清洗 + 字段映射 + 校验
+    ├── classifier.py       # 心率区间 + 跑步类型分类
+    ├── chart_generator.py   # Plotly 交互式图表（9个独立图表）
+    └── report_generator.py # Jinja2 HTML 报告生成
 ```
 
 ## 状态管理
@@ -71,7 +72,9 @@ PowerFun/
 
 ## 输出
 
-报告默认保存在 `~/.powerfun/reports/` 目录。
+- **主HTML报告**: `/Users/jarvis/Documents/Run/PowerFun.html`
+- **自动备份**: `/Users/jarvis/Documents/Run/PowerFun_Reports/`
+- **清洗后CSV**: `/Users/jarvis/Documents/Run/running_data_cleaned.csv`
 
 ## 注意事项
 

@@ -55,29 +55,30 @@ python main.py --dry-run
 
 ```
 PowerFun/
-├── main.py                 # 主程序入口（5 步流程）
+├── main.py                 # 主程序入口（7 步流程）
 ├── requirements.txt        # Python 依赖
 ├── SKILL.md               # OpenClaw 技能说明
 ├── README.md              # 项目文档
+├── VERSION                # 版本文件
 ├── .gitignore
 └── src/
     ├── __init__.py
     ├── config.py           # 字段映射 + 心率区间 + 默认配置
     ├── data_fetcher.py     # Garmin Connect API 数据获取
     ├── data_processor.py   # 数据清洗 + 字段映射 + 校验
-    ├── analyzer.py         # 心率区间 + 配速趋势 + 月度统计
-    ├── visualizer.py       # Plotly 交互式图表
-    └── report_generator.py # Jinja2 HTML 报告
+    ├── classifier.py       # 心率区间 + 跑步类型分类
+    ├── chart_generator.py   # Plotly 交互式图表（9个独立图表）
+    └── report_generator.py # Jinja2 HTML 报告生成
 ```
 
 ## 数据流
 
 ```
-Garmin API → DataFetcher → DataProcessor → Analyzer → Visualizer → ReportGenerator
-                ↓              ↓              ↓            ↓              ↓
-           自动登录        字段映射        统计分析      Plotly 图     HTML 报告
-           增量拉取        数据清洗        趋势判断      仪表盘        移动端友好
-           限流处理        异常检测        区间分布
+Garmin API → DataFetcher → DataProcessor → Classifier → ChartGenerator → ReportGenerator
+                ↓              ↓              ↓             ↓                ↓
+           自动登录        字段映射        数据清洗      9个交互式图表    HTML 报告
+           增量拉取        类型转换        异常检测      功率分析        移动端友好
+           限流处理        完整性校验      智能分类      心率区间        自动备份
 ```
 
 ## 字段映射
