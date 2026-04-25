@@ -1,0 +1,36 @@
+# PowerFun 数据输出
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据目录
+~/.powerfun/
+.powerfun/
+
+# 报告输出
+reports/
+*.html
+*.png
+*.jpg
+
+# JSON 数据
+*.json
+!package.json
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
