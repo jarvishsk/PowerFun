@@ -77,7 +77,12 @@ FIELD_MAPPING = {
         'source': 'activity_type',
         'transform': 'identity',
         'description': '活动类型'
-    }
+    },
+    'hr_zone_1_sec': { 'source': 'hrTimeInZone_1', 'transform': 'identity', 'description': 'Z1 心率区间时长（秒）' },
+    'hr_zone_2_sec': { 'source': 'hrTimeInZone_2', 'transform': 'identity', 'description': 'Z2 心率区间时长（秒）' },
+    'hr_zone_3_sec': { 'source': 'hrTimeInZone_3', 'transform': 'identity', 'description': 'Z3 心率区间时长（秒）' },
+    'hr_zone_4_sec': { 'source': 'hrTimeInZone_4', 'transform': 'identity', 'description': 'Z4 心率区间时长（秒）' },
+    'hr_zone_5_sec': { 'source': 'hrTimeInZone_5', 'transform': 'identity', 'description': 'Z5 心率区间时长（秒）' }
 }
 
 # 额外保留字段（用于未来扩展）

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class ChartGenerator:
     """图表生成器"""
-    
+
     HR_ZONE_COLORS = {
         'Z1-有氧基础': '#808080',
         'Z2-有氧耐力': '#87CEEB',
@@ -25,7 +25,7 @@ class ChartGenerator:
         'Z4-无氧耐力': '#FFA500',
         'Z5-最大强度': '#FF0000',
     }
-    
+
     CATEGORY_COLORS = {
         'easy_run': '#808080',
         'aerobic_run': '#87CEEB',
@@ -34,7 +34,7 @@ class ChartGenerator:
         'half_marathon': '#FFD700',
         'race_event': '#FFD700'
     }
-    
+
     CAT_NAME_MAP = {
         'easy_run': '轻松跑',
         'aerobic_run': '有氧耐力',
@@ -43,31 +43,31 @@ class ChartGenerator:
         'half_marathon': '比赛',
         'race_event': '比赛'
     }
-    
+
     def __init__(self, max_points: int = 50):
         self.max_points = max_points
-    
+
     def _to_js_dict(self, fig_dict: Dict) -> Dict:
         """将Plotly字典转换为可JSON序列化的字典"""
         return json.loads(json.dumps(fig_dict, default=lambda x: x.tolist() if hasattr(x, 'tolist') else str(x) if isinstance(x, pd.Timestamp) else x))
-    
+
     def _format_pace(self, seconds: int) -> str:
         """将秒数转换为分:秒格式"""
         minutes = seconds // 60
         secs = seconds % 60
         return f"{minutes}:{secs:02d}"
-    
+
     def _get_recent_months(self, df: pd.DataFrame, months: int = 12) -> pd.DataFrame:
         """获取最近N个月的数据"""
         if df.empty or 'year_month' not in df.columns:
             return df
-        
+
         unique_months = sorted(df['year_month'].unique())
         if len(unique_months) > months:
             recent_months = unique_months[-months:]
             return df[df['year_month'].isin(recent_months)]
         return df
-    
+
     def create_pace_hr_trend_chart(self, df: pd.DataFrame) -> Dict:
         """
         创建配速-心率趋势图
@@ -77,24 +77,24 @@ class ChartGenerator:
         """
         if df.empty:
             return {}
-        
+
         df = df.copy().sort_values('date')
         df['date_str'] = df['date'].dt.strftime('%m-%d')
-        
+
         # 计算各时间范围
         now = datetime.now()
         ts_3m = now - timedelta(days=90)
         ts_6m = now - timedelta(days=180)
         ts_1y = now - timedelta(days=365)
         ts_ytd = datetime(now.year, 1, 1)
-        
+
         # 筛选各时间范围的数据
         df_all = df
         df_1y = df[df['date'] >= ts_1y]
         df_ytd = df[df['date'] >= ts_ytd]
         df_6m = df[df['date'] >= ts_6m]
         df_3m = df[df['date'] >= ts_3m]
-        
+
         time_ranges = {
             'all': df_all,
             '1y': df_1y,
@@ -102,14 +102,14 @@ class ChartGenerator:
             '6m': df_6m,
             '3m': df_3m
         }
-        
-        # 4种类型：轻松跑、有氧耐力、LSD、比赛(合并全马半马赛事)
+
+        # 4种类型:轻松跑、有氧耐力、LSD、比赛(合并全马半马赛事)
         cat_list = ['easy_run', 'aerobic_run', 'lsd', 'race']
         date_range_list = ['all', '1y', 'ytd', '6m', '3m']
-        
+
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # 为每个（类型，日期范围）组合创建2个trace（配速+心率）
+
+        # 为每个(类型,日期范围)组合创建2个trace(配速+心率)
         for cat in cat_list:
             if cat == 'race':
                 color = '#FFD700'
@@ -117,23 +117,23 @@ class ChartGenerator:
             else:
                 color = self.CATEGORY_COLORS.get(cat, '#4169E1')
                 cat_name = self.CAT_NAME_MAP.get(cat, cat)
-            
+
             for date_range in date_range_list:
                 range_df = time_ranges[date_range]
-                
+
                 if cat == 'race':
                     cat_df = range_df[range_df['category'].isin(['full_marathon', 'half_marathon', 'race_event'])]
                 else:
                     cat_df = range_df[range_df['category'] == cat]
-                
-                # 默认显示：轻松跑 + 全部
+
+                # 默认显示:轻松跑 + 全部
                 is_visible = (cat == 'easy_run' and date_range == 'all')
-                
+
                 if len(cat_df) > 0:
                     # 添加配速格式化列
                     cat_df = cat_df.copy()
                     cat_df['pace_fmt'] = cat_df['avg_pace_sec'].apply(self._format_pace)
-                    
+
                     # 配速曲线 - hover显示分:秒格式
                     fig.add_trace(go.Scatter(
                         x=cat_df['date'].tolist(),
@@ -147,7 +147,7 @@ class ChartGenerator:
                         hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>配速: %{customdata[2]}<extra></extra>",
                         customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values, cat_df['pace_fmt'].values], axis=-1)
                     ), secondary_y=False)
-                    
+
                     # 心率曲线
                     fig.add_trace(go.Scatter(
                         x=cat_df['date'].tolist(),
@@ -166,28 +166,28 @@ class ChartGenerator:
                     # 添加空trace保持索引一致
                     fig.add_trace(go.Scatter(x=[], y=[], visible=False), secondary_y=False)
                     fig.add_trace(go.Scatter(x=[], y=[], visible=False, showlegend=False), secondary_y=True)
-        
+
         total_traces = len(fig.data)
         traces_per_combo = 2
-        
-        # 生成指定（类型，日期范围）的visible列表
+
+        # 生成指定(类型,日期范围)的visible列表
         def make_visible(cat_idx: int, date_idx: int) -> List[bool]:
             visible = [False] * total_traces
             start_idx = (cat_idx * 5 + date_idx) * traces_per_combo
             visible[start_idx] = True
             visible[start_idx + 1] = True
             return visible
-        
+
         # 把可见性矩阵作为图表数据的一部分返回
         cat_labels = ['轻松跑', '有氧耐力', 'LSD', '比赛']
         date_labels = ['全部', '近一年', '今年以来', '近半年', '近三个月']
-        
+
         visibility_matrix = {}
         for cat_idx in range(len(cat_labels)):
             for date_idx in range(len(date_labels)):
                 key = f"{cat_idx}_{date_idx}"
                 visibility_matrix[key] = make_visible(cat_idx, date_idx)
-        
+
         fig.update_layout(
             title=None,
             xaxis=dict(
@@ -203,38 +203,38 @@ class ChartGenerator:
                 tickvals=[315, 330, 345, 360, 375, 390, 405, 420, 435, 450, 465, 480],
                 ticktext=['5:15', '5:30', '5:45', '6:00', '6:15', '6:30', '6:45', '7:00', '7:15', '7:30', '7:45', '8:00']
             ),
-            yaxis2=dict(title='心率 (bpm)', range=[100, 200]),
+            yaxis2=dict(title='心率 (bpm)', range=[120, 180]),
             legend=dict(orientation='h', yanchor='bottom', y=1.15, xanchor='center', x=0.5),
             hovermode='x unified',
             template='plotly_white',
             height=500,
             margin=dict(l=80, r=60, t=120, b=80),
         )
-        
+
         fig_dict = fig.to_dict()
-        # 把筛选数据放在顶层，不放在 layout 中
+        # 把筛选数据放在顶层,不放在 layout 中
         fig_dict['_pace_hr_filter'] = {
             'cat_labels': cat_labels,
             'date_labels': date_labels,
             'visibility_matrix': visibility_matrix
         }
-        
+
         return self._to_js_dict(fig_dict)
-    
+
     def create_monthly_volume_chart(self, df: pd.DataFrame) -> Dict:
         """创建月跑量柱状图 - yy-mm格式"""
         if df.empty or 'year_month' not in df.columns:
             return {}
-        
+
         df_recent = self._get_recent_months(df, 12)
         monthly = df_recent.groupby('year_month')['distance'].sum().reset_index()
         monthly = monthly.sort_values('year_month')
-        
+
         # 转换为yy-mm格式字符串
         monthly['year_month_str'] = monthly['year_month'].astype(str).apply(
             lambda x: f"{x[2:4]}-{x[5:7]}"
         )
-        
+
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=monthly['year_month_str'].tolist(),
@@ -243,7 +243,7 @@ class ChartGenerator:
             opacity=0.8,
             hovertemplate="%{x}: %{y:.1f} km<extra></extra>"
         ))
-        
+
         fig.update_layout(
             title=None,
             xaxis=dict(tickangle=0, title=None, type='category'),
@@ -252,66 +252,42 @@ class ChartGenerator:
             height=400,
             margin=dict(l=60, r=40, t=40, b=60)
         )
-        
+
         return self._to_js_dict(fig.to_dict())
-    
-    def create_hr_zone_pie_chart(self, df: pd.DataFrame) -> Dict:
-        """创建心率分布饼图（带时间筛选）- 按钮放到图表外面"""
-        if df.empty or 'hr_zone' not in df.columns:
-            return {}
-        
-        zone_order = ['Z1-有氧基础', 'Z2-有氧耐力', 'Z3-乳酸阈值', 'Z4-无氧耐力', 'Z5-最大强度']
-        
-        # 准备各时间范围的数据
+
+    def _prepare_time_ranges(self, df):
+        """计算各时间范围数据"""
         now = datetime.now()
-        date_ranges = {
+        return {
             'all': df,
             '3m': df[df['date'] >= now - timedelta(days=90)],
             '6m': df[df['date'] >= now - timedelta(days=180)],
             'ytd': df[df['date'] >= datetime(now.year, 1, 1)],
             '1y': df[df['date'] >= now - timedelta(days=365)]
         }
-        
-        range_data = {}
-        for range_key, range_df in date_ranges.items():
-            if range_df.empty:
-                range_data[range_key] = {'labels': [], 'values': [], 'colors': []}
-                continue
-            
-            range_zone = range_df.groupby('hr_zone').agg({
-                'duration_min': 'sum',
-                'hr_zone_color': 'first'
-            }).reset_index()
-            range_zone = range_zone[range_zone['hr_zone'].str.contains(r'Z\d', na=False)]
-            range_zone['sort_key'] = range_zone['hr_zone'].apply(lambda x: zone_order.index(x) if x in zone_order else 99)
-            range_zone = range_zone.sort_values('sort_key')
-            
-            range_data[range_key] = {
-                'labels': range_zone['hr_zone'].tolist(),
-                'values': range_zone['duration_min'].tolist(),
-                'colors': range_zone['hr_zone_color'].tolist()
-            }
-        
+
+    def _create_pie_fig(self, range_data_dict):
+        """根据 range_data 创建饼图"""
         fig = go.Figure()
-        
+
         for range_key in ['all', '3m', '6m', 'ytd', '1y']:
             fig.add_trace(go.Pie(
-                labels=range_data[range_key]['labels'],
-                values=range_data[range_key]['values'],
-                marker_colors=range_data[range_key]['colors'],
+                labels=range_data_dict[range_key]['labels'],
+                values=range_data_dict[range_key]['values'],
+                marker_colors=range_data_dict[range_key]['colors'],
                 hole=0.4,
                 textinfo='label+percent',
                 textposition='outside',
-                hovertemplate="%{label}<br>%{value:.0f} 分钟<br>%{percent}<extra></extra>",
+                hovertemplate="%{label}<br>%{value:.1f} 分钟<br>%{percent}<extra></extra>",
                 visible=(range_key == 'all')
             ))
-        
+
         fig.update_layout(
             title=None,
             template='plotly_white',
             height=400,
             showlegend=False,
-            # 增加顶部margin，给按钮留出空间
+            # 增加顶部margin,给按钮留出空间
             margin=dict(l=40, r=40, t=100, b=40),
             updatemenus=[
                 dict(
@@ -332,14 +308,74 @@ class ChartGenerator:
                 )
             ]
         )
-        
+
+        return fig
+
+    def create_hr_zone_pie_chart(self, df: pd.DataFrame) -> Dict:
+        """创建心率分布饼图(带时间筛选)- 按钮放到图表外面"""
+        if df.empty:
+            return {}
+
+        # 检查是否有所需的心率区间时长字段
+        hr_zone_cols = ['hr_zone_1_sec', 'hr_zone_2_sec', 'hr_zone_3_sec', 'hr_zone_4_sec', 'hr_zone_5_sec']
+        if not all(col in df.columns for col in hr_zone_cols):
+            # 如果没有API提供的字段,直接返回空字典,不再回退到旧逻辑
+            return {}
+
+        # 使用新的API字段
+        zone_order = ['Z1-有氧基础', 'Z2-有氧耐力', 'Z3-乳酸阈值', 'Z4-无氧耐力', 'Z5-最大强度']
+        zone_names = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']
+
+        # 准备各时间范围的数据
+        date_ranges = self._prepare_time_ranges(df)
+
+        range_data = {}
+        for range_key, range_df in date_ranges.items():
+            if range_df.empty:
+                range_data[range_key] = {'labels': [], 'values': [], 'colors': []}
+                continue
+
+            # 对每个时间范围,汇总各区间秒数
+            zone_seconds = {
+                'Z1': range_df['hr_zone_1_sec'].sum() if 'hr_zone_1_sec' in range_df.columns else 0,
+                'Z2': range_df['hr_zone_2_sec'].sum() if 'hr_zone_2_sec' in range_df.columns else 0,
+                'Z3': range_df['hr_zone_3_sec'].sum() if 'hr_zone_3_sec' in range_df.columns else 0,
+                'Z4': range_df['hr_zone_4_sec'].sum() if 'hr_zone_4_sec' in range_df.columns else 0,
+                'Z5': range_df['hr_zone_5_sec'].sum() if 'hr_zone_5_sec' in range_df.columns else 0,
+            }
+
+            # 过滤值为 0 的区间
+            filtered_zones = {k: v for k, v in zone_seconds.items() if v > 0}
+
+            # 秒转分钟
+            zone_minutes = {k: v / 60.0 for k, v in filtered_zones.items()}
+
+            # 构建标签、值和颜色列表
+            labels = []
+            values = []
+            colors = []
+
+            for i, zone_name in enumerate(zone_names):
+                if zone_name in zone_minutes:
+                    labels.append(zone_order[i])  # Z1-有氧基础, Z2-有氧耐力, ...
+                    values.append(zone_minutes[zone_name])
+                    colors.append(self.HR_ZONE_COLORS[zone_order[i]])
+
+            range_data[range_key] = {
+                'labels': labels,
+                'values': values,
+                'colors': colors
+            }
+
+        fig = self._create_pie_fig(range_data)
+
         return self._to_js_dict(fig.to_dict())
-    
+
     def create_category_pie_chart(self, df: pd.DataFrame) -> Dict:
-        """创建跑分类别分布饼图（带时间筛选）- 按钮放到图表外面"""
+        """创建跑分类别分布饼图(带时间筛选)- 按钮放到图表外面"""
         if df.empty or 'category' not in df.columns:
             return {}
-        
+
         now = datetime.now()
         date_ranges = {
             'all': df,
@@ -348,23 +384,23 @@ class ChartGenerator:
             'ytd': df[df['date'] >= datetime(now.year, 1, 1)],
             '1y': df[df['date'] >= now - timedelta(days=365)]
         }
-        
+
         range_data = {}
         for range_key, range_df in date_ranges.items():
             if range_df.empty:
                 range_data[range_key] = {'labels': [], 'values': [], 'colors': []}
                 continue
-            
+
             cat_data = range_df.groupby(['category', 'category_name', 'category_color']).size().reset_index(name='count')
-            
+
             range_data[range_key] = {
                 'labels': cat_data['category_name'].tolist(),
                 'values': cat_data['count'].tolist(),
                 'colors': cat_data['category_color'].tolist()
             }
-        
+
         fig = go.Figure()
-        
+
         for range_key in ['all', '3m', '6m', 'ytd', '1y']:
             fig.add_trace(go.Pie(
                 labels=range_data[range_key]['labels'],
@@ -376,13 +412,13 @@ class ChartGenerator:
                 hovertemplate="%{label}<br>%{value} 次<br>%{percent}<extra></extra>",
                 visible=(range_key == 'all')
             ))
-        
+
         fig.update_layout(
             title=None,
             template='plotly_white',
             height=400,
             showlegend=False,
-            # 增加顶部margin，给按钮留出空间
+            # 增加顶部margin,给按钮留出空间
             margin=dict(l=40, r=40, t=100, b=40),
             updatemenus=[
                 dict(
@@ -403,24 +439,46 @@ class ChartGenerator:
                 )
             ]
         )
-        
+
         return self._to_js_dict(fig.to_dict())
-    
+
     def create_hr_zone_stacked_bar(self, df: pd.DataFrame) -> Dict:
         """创建心率区间堆叠柱状图 - yy-mm格式"""
-        if df.empty or 'hr_zone' not in df.columns or 'year_month' not in df.columns:
+        if df.empty or 'year_month' not in df.columns:
             return {}
         
-        df_recent = self._get_recent_months(df, 12)
-        monthly_zone = df_recent.groupby(['year_month', 'hr_zone'])['duration_min'].sum().reset_index()
-        pivot_df = monthly_zone.pivot(index='year_month', columns='hr_zone', values='duration_min').fillna(0)
+        # 检查是否有所需的心率区间时长字段
+        hr_zone_cols = ['hr_zone_1_sec', 'hr_zone_2_sec', 'hr_zone_3_sec', 'hr_zone_4_sec', 'hr_zone_5_sec']
+        if not all(col in df.columns for col in hr_zone_cols):
+            # 如果没有API提供的字段，直接返回空字典，不再回退到旧逻辑
+            return {}
         
-        zone_order = ['Z1-有氧基础', 'Z2-有氧耐力', 'Z3-乳酸阈值', 'Z4-无氧耐力', 'Z5-最大强度']
-        for zone in zone_order:
-            if zone not in pivot_df.columns:
-                pivot_df[zone] = 0
-        pivot_df = pivot_df[[z for z in zone_order if z in pivot_df.columns]]
-        pivot_df = pivot_df.sort_index()
+        # 使用新的API字段
+        df_recent = self._get_recent_months(df, 12)
+        
+        # 按 year_month 分组，对 hr_zone_1~5_sec 分别求和
+        monthly_hr = df_recent.groupby('year_month').agg({
+            'hr_zone_1_sec': 'sum',
+            'hr_zone_2_sec': 'sum',
+            'hr_zone_3_sec': 'sum',
+            'hr_zone_4_sec': 'sum',
+            'hr_zone_5_sec': 'sum',
+        })
+        
+        # 秒转分钟：monthly_hr = monthly_hr / 60
+        monthly_hr = monthly_hr / 60
+        
+        # 使用安全映射重命名
+        rename_map = {
+            'hr_zone_1_sec': 'Z1-有氧基础',
+            'hr_zone_2_sec': 'Z2-有氧耐力',
+            'hr_zone_3_sec': 'Z3-乳酸阈值',
+            'hr_zone_4_sec': 'Z4-无氧耐力',
+            'hr_zone_5_sec': 'Z5-最大强度',
+        }
+        monthly_hr = monthly_hr.rename(columns=rename_map)
+        
+        pivot_df = monthly_hr
         
         # 转换为yy-mm格式字符串
         x_labels = [f"{str(idx)[2:4]}-{str(idx)[5:7]}" for idx in pivot_df.index]
@@ -434,7 +492,7 @@ class ChartGenerator:
                 x=x_labels,
                 y=pivot_df[zone].tolist(),
                 marker_color=color,
-                hovertemplate=f"{zone}<br>%{{x}}: %{{y:.0f}} 分钟<extra></extra>"
+                hovertemplate=f"{zone}<br>%{{x}}: %{{y:.1f}} 分钟<extra></extra>"
             ))
         
         fig.update_layout(
@@ -449,11 +507,11 @@ class ChartGenerator:
         )
         
         return self._to_js_dict(fig.to_dict())
-    
+
     def create_distance_trend_chart(self, df: pd.DataFrame) -> Dict:
         """
         创建距离趋势图
-        - 散点图 + 移动平均线（x轴使用实际日期，自动按时间排序）
+        - 散点图 + 移动平均线(x轴使用实际日期,自动按时间排序)
         - 按分类着色
         """
         if df.empty:
@@ -496,7 +554,7 @@ class ChartGenerator:
                 customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values], axis=-1)
             ))
 
-        # 移动平均线（窗口=5）
+        # 移动平均线(窗口=5)
         if len(df) >= 5:
             rolling_avg = df['distance'].rolling(window=5, center=True).mean()
             fig.add_trace(go.Scatter(
@@ -695,55 +753,55 @@ class ChartGenerator:
         try:
             charts['pace_hr_trend'] = self.create_pace_hr_trend_chart(df)
         except Exception as e:
-            logger.error(f"生成配速-心率趋势图失败: {e}")
+            logger.warning(f"图表生成失败: pace_hr_trend")
             charts['pace_hr_trend'] = {}
 
         try:
             charts['monthly_volume'] = self.create_monthly_volume_chart(df)
         except Exception as e:
-            logger.error(f"生成月跑量图失败: {e}")
+            logger.warning(f"图表生成失败: monthly_volume")
             charts['monthly_volume'] = {}
 
         try:
             charts['hr_zone_pie'] = self.create_hr_zone_pie_chart(df)
         except Exception as e:
-            logger.error(f"生成心率分布饼图失败: {e}")
+            logger.warning(f"图表生成失败: hr_zone_pie")
             charts['hr_zone_pie'] = {}
 
         try:
             charts['category_pie'] = self.create_category_pie_chart(df)
         except Exception as e:
-            logger.error(f"生成分类分布饼图失败: {e}")
+            logger.warning(f"图表生成失败: category_pie")
             charts['category_pie'] = {}
 
         try:
             charts['hr_zone_stacked'] = self.create_hr_zone_stacked_bar(df)
         except Exception as e:
-            logger.error(f"生成心率区间堆叠图失败: {e}")
+            logger.warning(f"图表生成失败: hr_zone_stacked")
             charts['hr_zone_stacked'] = {}
 
         try:
             charts['distance_trend'] = self.create_distance_trend_chart(df)
         except Exception as e:
-            logger.error(f"生成距离趋势图失败: {e}")
+            logger.warning(f"图表生成失败: distance_trend")
             charts['distance_trend'] = {}
 
         try:
             charts['training_effect'] = self.create_training_effect_chart(df)
         except Exception as e:
-            logger.error(f"生成训练效果趋势图失败: {e}")
+            logger.warning(f"图表生成失败: training_effect")
             charts['training_effect'] = {}
 
         try:
             charts['power_distribution'] = self.create_power_distribution_chart(df)
         except Exception as e:
-            logger.error(f"生成功率分布图失败: {e}")
+            logger.warning(f"图表生成失败: power_distribution")
             charts['power_distribution'] = {}
 
         try:
             charts['hr_distribution'] = self.create_hr_distribution_histogram(df)
         except Exception as e:
-            logger.error(f"生成心率分布直方图失败: {e}")
+            logger.warning(f"图表生成失败: hr_distribution")
             charts['hr_distribution'] = {}
 
         return charts

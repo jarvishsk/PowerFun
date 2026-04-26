@@ -21,6 +21,7 @@ class DataProcessor:
     def __init__(self):
         self.field_mapping = FIELD_MAPPING
         self.extra_fields = EXTRA_FIELDS
+        self._use_summary_extractor = False  # 用于标识是否使用 summary 提取器
 
     def process(self, raw_activities: list[dict]) -> pd.DataFrame:
         """处理原始活动数据，返回标准化 DataFrame
@@ -37,6 +38,9 @@ class DataProcessor:
             return pd.DataFrame()
 
         logger.info(f"开始处理 {len(raw_activities)} 条活动数据...")
+
+        # 检测数据格式，在开始处理前一次性确定使用哪种提取器
+        self._use_summary_extractor = any('summaryDTO' in a or ('raw_data' in a and 'summaryDTO' in a['raw_data']) for a in raw_activities)
 
         # Step 1: 提取并映射基础字段
         records = []
@@ -82,37 +86,40 @@ class DataProcessor:
         """_map_activity 的实际实现"""
         record = {}
 
-        # 先尝试从 summaryDTO 提取数据 (garmer 格式)
-        summary = activity.get("summaryDTO", {})
-        raw_data = activity.get("raw_data", {})
-        if raw_data and not summary:
-            summary = raw_data.get("summaryDTO", {})
+        # 根据预设的标志选择提取器
+        if self._use_summary_extractor:
+            # 从 summaryDTO 提取数据 (garmer 格式)
+            summary = activity.get("summaryDTO", {})
+            raw_data = activity.get("raw_data", {})
+            if raw_data and not summary:
+                summary = raw_data.get("summaryDTO", {})
 
-        # 判断数据来源格式
-        has_summary = bool(summary)
-
-        # 映射标准字段
-        for target_field, mapping in self.field_mapping.items():
-            source = mapping["source"]
-            transform = mapping["transform"]
-            value = None
-
-            if has_summary:
-                # garmer 格式: 从 summaryDTO 提取
+            # 映射标准字段
+            for target_field, mapping in self.field_mapping.items():
+                source = mapping["source"]
+                transform = mapping["transform"]
                 value = self._extract_from_summary(summary, source, activity)
-            else:
-                # garth API 格式: 通过字段映射提取
+
+                if value is not None:
+                    value = self._apply_transform(value, transform, source)
+                record[target_field] = value
+
+            # 保留额外字段
+            for field in self.extra_fields:
+                record[field] = self._extract_extra(summary, field, activity)
+        else:
+            # garth API 格式: 通过字段映射提取
+            for target_field, mapping in self.field_mapping.items():
+                source = mapping["source"]
+                transform = mapping["transform"]
                 value = self._extract_from_garth(activity, source)
 
-            if value is not None:
-                value = self._apply_transform(value, transform, source)
-            record[target_field] = value
+                if value is not None:
+                    value = self._apply_transform(value, transform, source)
+                record[target_field] = value
 
-        # 保留额外字段
-        for field in self.extra_fields:
-            if has_summary:
-                record[field] = self._extract_extra(summary, field, activity)
-            else:
+            # 保留额外字段
+            for field in self.extra_fields:
                 record[field] = activity.get(field)
 
         return record
@@ -142,6 +149,11 @@ class DataProcessor:
             "avg_power": "averagePower",
             "elevation_gain_m": "elevationGain",
             "activity_type": None,
+            "hrTimeInZone_1": None,  # 特殊处理：从 activity 顶层获取
+            "hrTimeInZone_2": None,  # 特殊处理：从 activity 顶层获取
+            "hrTimeInZone_3": None,  # 特殊处理：从 activity 顶层获取
+            "hrTimeInZone_4": None,  # 特殊处理：从 activity 顶层获取
+            "hrTimeInZone_5": None,  # 特殊处理：从 activity 顶层获取
         }
 
         api_field = direct_map.get(source)
@@ -158,6 +170,9 @@ class DataProcessor:
                 return activity.get("activity_name") or activity.get("activityName") or activity.get("locationName") or "--"
             elif source == "activity_type":
                 return activity.get("activity_type_key") or activity.get("activityTypeKey", "running")
+            elif source.startswith("hrTimeInZone_"):
+                # hrTimeInZone 字段在 activity 顶层，不在 summaryDTO 中
+                return activity.get(source)
             return None
 
         value = summary.get(api_field)
@@ -197,6 +212,11 @@ class DataProcessor:
             "verticalRatio": "avgVerticalRatio",
             "avg_power": "avgPower",
             "elevation_gain_m": "elevationGain",
+            "hrTimeInZone_1": "hrTimeInZone_1",
+            "hrTimeInZone_2": "hrTimeInZone_2",
+            "hrTimeInZone_3": "hrTimeInZone_3",
+            "hrTimeInZone_4": "hrTimeInZone_4",
+            "hrTimeInZone_5": "hrTimeInZone_5",
         }
 
         garth_field = source_to_garth.get(source)
@@ -234,6 +254,9 @@ class DataProcessor:
                 if isinstance(act_type, dict):
                     return act_type.get("typeKey", "running")
                 return str(act_type) if act_type else "running"
+            elif source.startswith("hrTimeInZone_"):
+                # hrTimeInZone 字段直接从 activity 获取
+                return activity.get(source)
             return None
 
         value = activity.get(garth_field)
