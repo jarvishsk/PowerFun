@@ -48,6 +48,7 @@ from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
 from src.chart_generator import ChartGenerator
 from src.report_generator import ReportGenerator
+from src.pdf_generator import generate_pdf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -318,6 +319,22 @@ def main():
     logger.info("=" * 60)
     logger.info(f"✅ 主报告已生成: {main_report_path}")
     logger.info("=" * 60)
+
+    # ----------------------------------------------------------
+    # Step 7.5: 生成 PDF 报告
+    # ----------------------------------------------------------
+    logger.info("Step 7.5/7: 生成 PDF 报告...")
+    local_pdf = os.path.expanduser("/Users/jarvis/Documents/Run/PowerFun.pdf")
+    icloud_pdf = os.path.expanduser(
+        "~/Library/Mobile Documents/com~apple~CloudDocs/RUN/PowerFun.pdf"
+    )
+    # 确保本地输出目录存在
+    os.makedirs(os.path.dirname(local_pdf), exist_ok=True)
+    generate_pdf(
+        html_path=main_report_path,
+        output_path=local_pdf,
+        icloud_path=icloud_pdf,
+    )
 
     # 打印摘要
     _print_summary(stats)
