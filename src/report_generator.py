@@ -6,11 +6,19 @@
 import html
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 import logging
+
+
+def _safe_color(color) -> str:
+    """颜色值 XSS 白名单校验：只允许 #RRGGBB 格式"""
+    if re.match(r'^#[0-9a-fA-F]{6}$', str(color)):
+        return str(color)
+    return '#999999'
 
 try:
     from jinja2 import Environment, BaseLoader, select_autoescape
@@ -112,10 +120,17 @@ class ReportGenerator:
 
         return insights
 
-    def _prepare_table_data(self, df: pd.DataFrame) -> List[Dict]:
+    def _prepare_table_data(self, df: pd.DataFrame, analysis_dir: str = None) -> List[Dict]:
         """准备表格数据"""
+        # 扫描深析报告文件
+        available_links = set()
+        if analysis_dir and os.path.isdir(analysis_dir):
+            for fname in os.listdir(analysis_dir):
+                if fname.startswith('run_analysis_') and fname.endswith('.html'):
+                    available_links.add(fname)
+
         records = []
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             record = {
                 'date': row['date'].strftime('%Y-%m-%d') if pd.notna(row.get('date')) else '--',
                 'title': (row.get('title') or '--')[:25],  # 截断为最多25个字符
@@ -126,8 +141,17 @@ class ReportGenerator:
                 'hr': f"{int(row['avg_hr'])}" if pd.notna(row.get('avg_hr')) else '--',
                 'power': f"{int(row['avg_power'])}" if pd.notna(row.get('avg_power')) else '--',
                 'cadence': f"{int(row['cadence'])}" if pd.notna(row.get('cadence')) else '--',
+                'activity_id': row.get('activity_id', 'unknown'),
             }
+            # 检查是否有对应的深析报告
+            if analysis_dir:
+                date_str = record['date'].replace('-', '')  # YYYYMMDD
+                expected_file = f"run_analysis_{date_str}.html"
+                if expected_file in available_links:
+                    record['deep_analysis_link'] = expected_file
+
             records.append(record)
+
         records.sort(key=lambda x: x['date'], reverse=True)
         return records
 
@@ -141,10 +165,10 @@ class ReportGenerator:
                 charts_json[key] = 'null'
         return charts_json
 
-    def generate_html(self, df: pd.DataFrame, charts: Dict, stats: Dict, output_path: str):
+    def generate_html(self, df: pd.DataFrame, charts: Dict, stats: Dict, output_path: str, analysis_dir: str = None):
         """生成HTML报告"""
         insights = self.generate_insights(df, stats)
-        table_data = self._prepare_table_data(df)
+        table_data = self._prepare_table_data(df, analysis_dir=analysis_dir)
         charts_json = self._serialize_charts(charts)
 
         # 预计算模板变量
@@ -220,7 +244,7 @@ class ReportGenerator:
 
         table_html = '\n'.join([
             f'<tr><td>{html.escape(r["date"])}</td><td>{html.escape(r["title"])}</td>'
-            f'<td><span class="category-badge" style="background-color:{html.escape(r["category_color"])}">{html.escape(r["category"])}</span></td>'
+            f'<td><span class="category-badge" style="background-color:{_safe_color(r.get("category_color", "#999"))}">{html.escape(r["category"])}</span></td>'
             f'<td>{html.escape(r["distance"])}</td><td>{html.escape(r["pace"])}</td><td>{html.escape(r["hr"])}</td>'
             f'<td>{html.escape(r["power"])}</td><td>{html.escape(r["cadence"])}</td></tr>'
             for r in table_data
@@ -268,9 +292,9 @@ class ReportGenerator:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>跑步数据分析报告 - {{ stats.get('date_range', {}).get('start', '') }} 至 {{ stats.get('date_range', {}).get('end', '') }}</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/css/jquery.dataTables.min.css">
+    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/js/jquery.dataTables.min.js"></script>
     <style>
         :root {
             --z1-color: #808080; --z2-color: #87CEEB; --z3-color: #32CD32;
@@ -466,6 +490,7 @@ class ReportGenerator:
                             <th>日期</th><th>标题</th><th>分类</th>
                             <th>距离 (km)</th><th>配速</th><th>心率 (bpm)</th>
                             <th>功率 (w)</th><th>步频 (spm)</th>
+                            <th>深度分析</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -479,6 +504,15 @@ class ReportGenerator:
                             <td>{{ record['hr'] }}</td>
                             <td>{{ record['power'] }}</td>
                             <td>{{ record['cadence'] }}</td>
+                            <td>
+                                {% if record.get('deep_analysis_link') %}
+                                <a href="PowerFun_Reports/{{ record['deep_analysis_link'] }}" 
+                                   target="_blank" 
+                                   style="color:#667eea;text-decoration:none;">📊 查看</a>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -594,7 +628,7 @@ class ReportGenerator:
         $(document).ready(function() {
             $('#data-table').DataTable({
                 pageLength: 50,
-                language: { url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/zh.json' },
+                language: { url: 'https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/i18n/zh.json' },
                 order: [[0, 'desc']]
             });
         });

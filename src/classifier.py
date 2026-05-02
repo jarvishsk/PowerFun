@@ -8,6 +8,8 @@ import numpy as np
 from typing import Tuple, Optional, Dict
 import logging
 
+from src.config import DEFAULT_CONFIG, ZONE_COLORS
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,18 +21,19 @@ class HeartRateClassifier:
     目标心率 = 静息心率 + HRR × 区间百分比
     """
     
-    # 默认心率参数
-    DEFAULT_HR_MAX = 190
-    DEFAULT_HR_REST = 60
+    # 默认心率参数（从 DEFAULT_CONFIG 读取）
+    DEFAULT_HR_MAX = DEFAULT_CONFIG.get('max_hr', 190)
+    DEFAULT_HR_REST = DEFAULT_CONFIG.get('resting_hr', 60)
     
     # 心率区间定义 (Z1范围已扩大至1%-74%)
+    # 注意: 这是类级别的共享字典，__init__ 中会 deepcopy 到实例级别
     ZONES = {
         'Z1': {
             'name': '有氧基础',
             'name_en': 'Aerobic Base',
             'range': (61, 156),  # 60+130*0.01=61.3, 60+130*0.74=156.2
             'percent': (0.01, 0.74),
-            'color': '#808080',
+            'color': ZONE_COLORS['Z1'],
             'emoji': '🩶',
             'purpose': '恢复跑、基础有氧'
         },
@@ -39,7 +42,7 @@ class HeartRateClassifier:
             'name_en': 'Aerobic Endurance',
             'range': (157, 169),
             'percent': (0.74, 0.84),
-            'color': '#87CEEB',
+            'color': ZONE_COLORS['Z2'],
             'emoji': '🩵',
             'purpose': 'MAF训练、LSD'
         },
@@ -48,7 +51,7 @@ class HeartRateClassifier:
             'name_en': 'Lactate Threshold',
             'range': (170, 174),
             'percent': (0.84, 0.88),
-            'color': '#32CD32',
+            'color': ZONE_COLORS['Z3'],
             'emoji': '🟢',
             'purpose': 'Tempo跑、半马配速'
         },
@@ -57,7 +60,7 @@ class HeartRateClassifier:
             'name_en': 'Anaerobic Endurance',
             'range': (175, 182),
             'percent': (0.88, 0.94),
-            'color': '#FFA500',
+            'color': ZONE_COLORS['Z4'],
             'emoji': '🟠',
             'purpose': '间歇训练、10K配速'
         },
@@ -66,7 +69,7 @@ class HeartRateClassifier:
             'name_en': 'Maximum Effort',
             'range': (183, 190),
             'percent': (0.94, 1.00),
-            'color': '#FF0000',
+            'color': ZONE_COLORS['Z5'],
             'emoji': '🔴',
             'purpose': '冲刺、最大心率训练'
         }
@@ -80,10 +83,12 @@ class HeartRateClassifier:
             hr_max: 最大心率，默认190
             hr_rest: 静息心率，默认60
         """
+        import copy
+        self.ZONES = copy.deepcopy(self.__class__.ZONES)
         self.hr_max = hr_max or self.DEFAULT_HR_MAX
         self.hr_rest = hr_rest or self.DEFAULT_HR_REST
         self.hrr = self.hr_max - self.hr_rest
-        
+
         # 重新计算区间边界
         self._recalculate_zones()
     
@@ -175,9 +180,9 @@ class HeartRateClassifier:
         df = df.copy()
         
         # 应用分类
-        classifications = df['avg_hr'].apply(self.classify)
-        df['hr_zone'] = classifications.apply(lambda x: x[0])
-        df['hr_zone_color'] = classifications.apply(lambda x: x[1])
+        results = df['avg_hr'].apply(self.classify)
+        df['hr_zone'] = results.str[0]
+        df['hr_zone_color'] = results.str[1]
         
         # 提取区间代码
         df['hr_zone_code'] = df['hr_zone'].apply(
@@ -225,19 +230,10 @@ class RunClassifier:
     5. 异常数据
     """
     
-    # 比赛关键词（中英文赛事相关词汇）
+    # 比赛关键词（通用赛事相关词汇，已简化为 8 个通用词）
+    # 删除了具体赛事名称和越野跑关键词（越野跑分类逻辑不同）
     RACE_KEYWORDS = [
-        'marathon', '马拉松', '半马', '越野',
-        'ultra', '比赛', 'race', '参赛', '赛事',
-        'hengshan marathon', 'xiamen marathon', 'beijing marathon',
-        'shanghai marathon', 'guangzhou marathon', 'shenzhen marathon',
-        'chengdu marathon', 'xian marathon', 'nanjing marathon',
-        'wuhan marathon', 'changsha marathon', 'suzhou marathon',
-        'ningbo marathon', 'wuxi marathon', 'hangzhou marathon',
-        '厦门马拉松', '杭州马拉松', '北京马拉松', '上海马拉松',
-        '广州马拉松', '深圳马拉松', '成都马拉松', '西安马拉松',
-        '南京马拉松', '武汉马拉松', '长沙马拉松', '苏州马拉松',
-        '宁波马拉松', '无锡马拉松', '衡水马拉松'
+        '马拉松', '半程马拉松', 'marathon', '全马', '半马', '比赛', 'full', 'half', 'race',
     ]
     
     # 分类定义

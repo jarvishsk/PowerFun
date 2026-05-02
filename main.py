@@ -34,6 +34,7 @@ import getpass
 import json
 import logging
 import os
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,7 +43,7 @@ import pandas as pd
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.config import DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG, FIELD_MAPPING
 from src.data_fetcher import GarminDataFetcher, AuthenticationError
 from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
@@ -89,6 +90,10 @@ def parse_args():
     parser.add_argument("--test-data", type=str, default=None, help="使用本地测试数据文件 (跳过 API 拉取)")
     parser.add_argument("--force-login", action="store_true", help="强制重新登录 (忽略已保存的 token)")
     parser.add_argument("--logout", action="store_true", help="删除已保存的 token 并退出")
+    parser.add_argument("--deep-analyze", type=str, default=None,
+                        help="对指定跑步做深度分析（日期 YYYY-MM-DD 或关键词）")
+    parser.add_argument("--deep-analyze-all", action="store_true",
+                        help="对所有跑步批量生成深析报告")
 
     return parser.parse_args()
 
@@ -111,17 +116,57 @@ def get_credentials(args) -> tuple:
     return email, password
 
 
+def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
+                          analysis_dir: Path, output_dir: Path,
+                          max_hr: int = 190, resting_hr: int = 60) -> str:
+    """对单次跑步生成深度分析报告（HTML + PDF + iCloud 备份）"""
+    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+    from src.analysis_report import AnalysisReportGenerator
+
+    analyzer = DeepRunAnalyzer(df, target_date=target_run.get('date'),
+                               max_hr=max_hr, resting_hr=resting_hr)
+    analysis_data = analyzer.analyze(target_run)
+
+    llm_gen = LLMReportGenerator()
+    llm_report = llm_gen.generate(analysis_data)
+
+    report_gen = AnalysisReportGenerator(str(analysis_dir))
+    html_path = report_gen.generate(analysis_data, llm_report)
+
+    date_str = target_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
+    local_pdf = str(analysis_dir / f"run_analysis_{date_str}.pdf")
+    generate_pdf(html_path, local_pdf, icloud_dir=DEFAULT_CONFIG["icloud_deep_analysis_dir"],
+                 height=DEFAULT_CONFIG["pdf_height"], width=DEFAULT_CONFIG["pdf_width"])
+
+    logger.info(f"✅ 深度分析报告已生成: {html_path}")
+    logger.info(f"   PDF: {local_pdf}")
+    return html_path
+
+
 def main():
     """主流程"""
     args = parse_args()
+
+    # fetcher 在测试模式下不会初始化，提前设为 None 防止 close() 报错
+    fetcher = None
 
     # 处理 logout
     if args.logout:
         fetcher = GarminDataFetcher()
         fetcher.logout(delete_tokens=True)
+        fetcher.close()
         logger.info("已删除认证 token")
         return
 
+    try:
+        _main_inner(args, fetcher)
+    finally:
+        if fetcher is not None:
+            fetcher.close()
+
+
+def _main_inner(args, fetcher):
+    """主流程内部逻辑（fetcher 在 main() 的 finally 中统一关闭）"""
     # 配置输出目录
     output_dir = Path(args.output or DEFAULT_CONFIG["report_dir"]).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +194,7 @@ def main():
         # ----------------------------------------------------------
         # Step 1: 认证 (优先使用已保存的 token)
         # ----------------------------------------------------------
-        logger.info("Step 1/7: 认证 Garmin Connect...")
+        logger.info("Step 1/10: 认证 Garmin Connect...")
         fetcher = GarminDataFetcher(
             state_file=DEFAULT_CONFIG["state_file"],
         )
@@ -171,35 +216,30 @@ def main():
                     logger.info("✅ 登录成功，token 已保存")
                 else:
                     logger.error("登录失败")
-                    fetcher.close()
                     sys.exit(1)
             except AuthenticationError as e:
                 logger.error(f"认证失败: {e}")
-                fetcher.close()
                 sys.exit(1)
 
         # ----------------------------------------------------------
         # Step 2: 拉取数据
         # ----------------------------------------------------------
-        logger.info(f"Step 2/7: 拉取跑步数据...")
+        logger.info(f"Step 2/10: 拉取跑步数据...")
         try:
             activities = fetcher.fetch_with_retry()
             logger.info(f"✅ 成功拉取 {len(activities)} 条活动")
         except Exception as e:
             logger.error(f"数据拉取失败: {e}")
-            fetcher.close()
             sys.exit(1)
 
         if not activities:
             logger.warning("无活动数据，退出")
-            if not args.test_data:
-                fetcher.close()
             sys.exit(0)
 
     # ----------------------------------------------------------
-    # Step 3: 数据处理
+    # Step 3: 数据清洗与字段映射
     # ----------------------------------------------------------
-    logger.info("Step 3/7: 数据清洗与字段映射...")
+    logger.info("Step 3/10: 数据清洗与字段映射...")
     processor = DataProcessor()
     df = processor.process(activities)
 
@@ -210,19 +250,17 @@ def main():
 
     if df.empty:
         logger.warning("数据处理后无有效记录，退出")
-        if not args.test_data:
-            fetcher.close()
         sys.exit(0)
 
     logger.info(f"✅ 有效记录: {len(df)} 条")
 
     # ----------------------------------------------------------
-    # Step 3.5: 过滤数据
+    # Step 4: 过滤数据
     # ----------------------------------------------------------
-    logger.info("Step 3.5/7: 过滤数据...")
+    logger.info("Step 4/10: 过滤数据...")
     
-    # 距离过滤（排除 > 50km）
-    dist_mask = df['distance'] <= 50
+    # 距离过滤（排除超长距离）
+    dist_mask = df['distance'] <= DEFAULT_CONFIG['max_distance_km']
     dist_excluded = int((~dist_mask).sum())
     
     # 标题过滤（排除包含"间歇跑"的活动）
@@ -231,7 +269,8 @@ def main():
     
     # 合并过滤
     df = df[dist_mask & title_mask].copy()
-    total_excluded = dist_excluded + title_excluded
+    combined_mask = dist_mask & title_mask
+    total_excluded = int((~combined_mask).sum())
     
     if total_excluded > 0:
         logger.info(f"已排除 {total_excluded} 条数据（{dist_excluded} 条超长距离，{title_excluded} 条间歇训练）")
@@ -241,8 +280,6 @@ def main():
     
     if df.empty:
         logger.warning("过滤后无有效记录，退出")
-        if not args.test_data:
-            fetcher.close()
         sys.exit(0)
 
     # 可选: 输出 JSON
@@ -259,25 +296,93 @@ def main():
     processor.to_csv(df, str(csv_path))
 
     # ----------------------------------------------------------
-    # Step 4: 心率区间分类
+    # Step 5: 心率区间分类
     # ----------------------------------------------------------
-    logger.info("Step 4/7: 心率区间分类...")
+    logger.info("Step 5/10: 心率区间分类...")
     hr_classifier = HeartRateClassifier(args.max_hr, args.resting_hr)
     df = hr_classifier.classify_dataframe(df)
     logger.info(f"✅ 心率分类完成")
 
     # ----------------------------------------------------------
-    # Step 5: 跑分类
+    # Step 6: 跑分类
     # ----------------------------------------------------------
-    logger.info("Step 5/7: 跑分类...")
+    logger.info("Step 6/10: 跑分类...")
     run_classifier = RunClassifier(hr_classifier)
     df = run_classifier.classify_dataframe(df)
     logger.info(f"✅ 跑分类完成")
 
     # ----------------------------------------------------------
-    # Step 6: 生成可视化图表 (使用原始 ChartGenerator)
+    # Step 5.5: --deep-analyze / --deep-analyze-all 模式
     # ----------------------------------------------------------
-    logger.info("Step 6/7: 生成可视化图表...")
+    if args.deep_analyze or args.deep_analyze_all:
+        from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+        from src.analysis_report import AnalysisReportGenerator
+
+        report_dir = Path(args.output or DEFAULT_CONFIG["report_dir"]).expanduser()
+        analysis_dir = report_dir / "PowerFun_Reports"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.deep_analyze:
+            # 匹配跑步记录
+            query = args.deep_analyze
+            matched = []
+
+            # 尝试日期格式匹配
+            try:
+                target_date = pd.Timestamp(query)
+                matched = df[df['date'].dt.date == target_date.date()]
+            except (ValueError, TypeError):
+                pass
+
+            # 如果没匹配到，尝试标题模糊匹配
+            if matched.empty:
+                matched = df[df['title'].str.contains(query, case=False, na=False)]
+
+            if len(matched) == 0:
+                logger.error(f"未找到匹配的跑步记录: {query}")
+                sys.exit(1)
+            elif len(matched) > 1:
+                logger.error(f"匹配到 {len(matched)} 条记录，请更精确地指定：")
+                for _, r in matched.iterrows():
+                    date_str = r['date'].strftime('%Y-%m-%d') if pd.notna(r.get('date')) else 'unknown'
+                    logger.error(f"  - {date_str} {r.get('title', '')}")
+                sys.exit(1)
+
+            target_run = matched.iloc[0]
+            logger.info(f"🎯 深度分析: {target_run.get('title', '')} ({target_run.get('date', '')})")
+
+            _generate_deep_report(df, target_run, analysis_dir, report_dir,
+                                  max_hr=args.max_hr, resting_hr=args.resting_hr)
+        else:
+            # --deep-analyze-all: 遍历所有记录
+            logger.info(f"📊 批量深度分析: {len(df)} 条记录...")
+            existing_files = set()
+            if analysis_dir.exists():
+                for f in os.listdir(analysis_dir):
+                    if f.startswith('run_analysis_') and f.endswith('.html'):
+                        existing_files.add(f)
+
+            count = 0
+            for idx, row in df.iterrows():
+                date_str = row.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
+                expected_html = f"run_analysis_{date_str}.html"
+                if expected_html in existing_files:
+                    logger.info(f"⏭️ 跳过已有报告: {expected_html}")
+                    continue
+
+                logger.info(f"📝 分析: {row.get('title', '')} ({row.get('date', '')})")
+                _generate_deep_report(df, row, analysis_dir, report_dir,
+                                      max_hr=args.max_hr, resting_hr=args.resting_hr)
+                count += 1
+
+            logger.info(f"✅ 批量深度分析完成: 共生成 {count} 条新报告")
+
+        return
+
+    # ----------------------------------------------------------
+    # Step 7: 生成可视化图表 (使用原始 ChartGenerator)
+    # ----------------------------------------------------------
+    logger.info("Step 7/10: 生成可视化图表...")
     chart_gen = ChartGenerator()
     charts_data = chart_gen.generate_all_charts(df)
     logger.info(f"✅ 已生成 {len(charts_data)} 个图表")
@@ -287,11 +392,9 @@ def main():
     # ----------------------------------------------------------
     if args.dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
-        if not args.test_data:
-            fetcher.close()
         return
 
-    logger.info("Step 7/7: 生成 HTML 报告...")
+    logger.info("Step 8/10: 生成 HTML 报告...")
 
     # 获取汇总统计 (兼容原始格式)
     stats = _get_summary_stats(df)
@@ -303,49 +406,70 @@ def main():
     main_report_path = str(output_dir / "PowerFun.html")
     backup_dir = output_dir / "PowerFun_Reports"
     
-    # 创建备份目录
+    # 创建备份目录（深析报告存放在此）
     backup_dir.mkdir(exist_ok=True)
     
-    # 如果存在旧的主报告，备份它
-    if os.path.exists(main_report_path):
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_path = str(backup_dir / f"PowerFun_backup_{timestamp}.html")
-        os.rename(main_report_path, backup_path)
-        logger.info(f"已备份旧报告: {backup_path}")
-    
     # 生成新报告作为主报告
-    report_gen.generate_html(df, charts_data, stats, main_report_path)
+    report_gen.generate_html(df, charts_data, stats, main_report_path,
+                             analysis_dir=str(backup_dir))
     
     logger.info("=" * 60)
     logger.info(f"✅ 主报告已生成: {main_report_path}")
     logger.info("=" * 60)
 
     # ----------------------------------------------------------
-    # Step 7.5: 生成 PDF 报告
+    # Step 9: 生成 PDF 报告
     # ----------------------------------------------------------
-    logger.info("Step 7.5/7: 生成 PDF 报告...")
-    local_pdf = os.path.expanduser("/Users/jarvis/Documents/Run/PowerFun.pdf")
-    icloud_pdf = os.path.expanduser(
-        "~/Library/Mobile Documents/com~apple~CloudDocs/RUN/PowerFun.pdf"
-    )
+    logger.info("Step 9/10: 生成 PDF 报告...")
+    local_pdf = str(output_dir / 'PowerFun.pdf')
     # 确保本地输出目录存在
     os.makedirs(os.path.dirname(local_pdf), exist_ok=True)
     generate_pdf(
         html_path=main_report_path,
         output_path=local_pdf,
-        icloud_path=icloud_pdf,
+        icloud_dir=DEFAULT_CONFIG['icloud_deep_analysis_dir'],
+        height=DEFAULT_CONFIG['pdf_height'],
+        width=DEFAULT_CONFIG['pdf_width'],
     )
+
+    # ----------------------------------------------------------
+    # Step 10: 生成深度分析报告
+    # ----------------------------------------------------------
+    logger.info("Step 10/10: 生成深度分析报告...")
+    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+    from src.analysis_report import AnalysisReportGenerator
+
+    report_dir = Path(args.output or DEFAULT_CONFIG["report_dir"]).expanduser()
+    analysis_dir = report_dir / "PowerFun_Reports"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    # 取最近一次跑步
+    latest_run = df.iloc[-1]  # DataFrame 已按日期排序
+    analyzer = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
+                               max_hr=args.max_hr, resting_hr=args.resting_hr)
+    analysis_data = analyzer.analyze(latest_run)
+
+    llm_gen = LLMReportGenerator()
+    llm_report = llm_gen.generate(analysis_data)
+
+    report_gen = AnalysisReportGenerator(str(analysis_dir))
+    html_path = report_gen.generate(analysis_data, llm_report)
+
+    # 生成 PDF（复用现有的 pdf_generator）
+    date_str = latest_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
+    pdf_path = str(analysis_dir / f"run_analysis_{date_str}.pdf")
+    generate_pdf(html_path, pdf_path, icloud_dir=DEFAULT_CONFIG["icloud_deep_analysis_dir"],
+                 height=DEFAULT_CONFIG["pdf_height"], width=DEFAULT_CONFIG["pdf_width"])
+
+    logger.info(f"✅ 深度分析报告已生成: {html_path}")
+    logger.info(f"   PDF: {pdf_path}")
 
     # 打印摘要
     _print_summary(stats)
 
-    if not args.test_data:
-        fetcher.close()
-
 
 def _get_summary_stats(df: pd.DataFrame) -> dict:
     """获取汇总统计 (兼容原始 ReportGenerator 格式)"""
-    import pandas as pd
     stats = {}
     stats['total_runs'] = len(df)
     stats['total_distance'] = float(df['distance'].sum()) if 'distance' in df.columns else 0

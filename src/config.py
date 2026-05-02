@@ -4,6 +4,9 @@
 """
 from pathlib import Path
 
+# 项目根目录（基于 config.py 所在目录计算）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # ============================================================
 # 字段映射：跑分期望字段 -> Garmer API 实际字段 + 转换逻辑
 # ============================================================
@@ -19,7 +22,7 @@ FIELD_MAPPING = {
         'description': '活动标题'
     },
     'distance': {
-        'source': 'distance_km',
+        'source': 'distance',
         'transform': 'identity',
         'description': '距离 (km)'
     },
@@ -82,7 +85,13 @@ FIELD_MAPPING = {
     'hr_zone_2_sec': { 'source': 'hrTimeInZone_2', 'transform': 'identity', 'description': 'Z2 心率区间时长（秒）' },
     'hr_zone_3_sec': { 'source': 'hrTimeInZone_3', 'transform': 'identity', 'description': 'Z3 心率区间时长（秒）' },
     'hr_zone_4_sec': { 'source': 'hrTimeInZone_4', 'transform': 'identity', 'description': 'Z4 心率区间时长（秒）' },
-    'hr_zone_5_sec': { 'source': 'hrTimeInZone_5', 'transform': 'identity', 'description': 'Z5 心率区间时长（秒）' }
+    'hr_zone_5_sec': { 'source': 'hrTimeInZone_5', 'transform': 'identity', 'description': 'Z5 心率区间时长（秒）' },
+    # 功率区间字段
+    'power_zone_1_sec': { 'source': 'powerTimeInZone_1', 'transform': 'identity', 'description': '功率 Z1 时长（秒）' },
+    'power_zone_2_sec': { 'source': 'powerTimeInZone_2', 'transform': 'identity', 'description': '功率 Z2 时长（秒）' },
+    'power_zone_3_sec': { 'source': 'powerTimeInZone_3', 'transform': 'identity', 'description': '功率 Z3 时长（秒）' },
+    'power_zone_4_sec': { 'source': 'powerTimeInZone_4', 'transform': 'identity', 'description': '功率 Z4 时长（秒）' },
+    'power_zone_5_sec': { 'source': 'powerTimeInZone_5', 'transform': 'identity', 'description': '功率 Z5 时长（秒）' },
 }
 
 # 额外保留字段（用于未来扩展）
@@ -96,45 +105,42 @@ EXTRA_FIELDS = [
     'normalized_power',   # 标准化功率 (NP)
     'ground_contact_time', # 触地时间 (ms)
     'start_lat',          # 起点纬度
-    'start_lon',          # 起点经度
+    'start_lon',          # 起点经度,
+    'aerobic_training_effect',   # 有氧训练效果
+    'anaerobic_training_effect', # 无氧训练效果
+    'training_effect_label',     # 训练效果文字
+    'training_load',             # 训练负荷
+    'aerobic_te_message',        # 有氧 TE 文字消息
+    'anaerobic_te_message',      # 无氧 TE 文字消息
+    'stride_length',             # 步幅 (cm)
+    'vO2_max',                   # 最大摄氧量
+    'bmr_calories',              # 基础代谢卡路里
 ]
-
-# ============================================================
-# 心率区间定义 (基于最大心率百分比)
-# ============================================================
-HEART_RATE_ZONES = {
-    'Z1_热身':    {'min_pct': 0.50, 'max_pct': 0.60, 'color': '#95a5a6', 'emoji': '🩶'},
-    'Z2_燃脂':    {'min_pct': 0.60, 'max_pct': 0.70, 'color': '#3498db', 'emoji': '💙'},
-    'Z3_有氧':    {'min_pct': 0.70, 'max_pct': 0.80, 'color': '#2ecc71', 'emoji': '💚'},
-    'Z4_无氧':    {'min_pct': 0.80, 'max_pct': 0.90, 'color': '#e67e22', 'emoji': '🧡'},
-    'Z5_极限':    {'min_pct': 0.90, 'max_pct': 1.00, 'color': '#e74c3c', 'emoji': '❤️'},
-}
-
-# ============================================================
-# 配速等级参考 (min/km)
-# ============================================================
-PACE_LEVELS = {
-    '精英':   {'max': 3.5,  'emoji': '🏆'},
-    '优秀':   {'max': 4.0,  'emoji': '⭐'},
-    '良好':   {'max': 4.5,  'emoji': '👍'},
-    '中等':   {'max': 5.0,  'emoji': '🏃'},
-    '入门':   {'max': 5.5,  'emoji': '🐢'},
-    '休闲':   {'max': 99.0, 'emoji': '🚶'},
-}
 
 # ============================================================
 # 默认配置
 # ============================================================
 DEFAULT_CONFIG = {
-    'data_dir': '~/.powerfun/data',
-    'state_file': '~/.powerfun/last_fetch.json',
+    'data_dir': str(PROJECT_ROOT / '.data'),
+    'state_file': str(PROJECT_ROOT / '.data' / 'last_fetch.json'),
     'report_dir': str(Path.home() / 'Documents' / 'Run'),
-    'cache_dir': '~/.powerfun/cache',
+    'cache_dir': str(PROJECT_ROOT / '.data'),
     'max_retries': 3,
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时
     'page_size': 100,             # Garmin API 分页大小
     'default_date_range_days': 30,
     'hr_zone_method': 'max_hr',   # 心率区间计算方法: max_hr | hrr (心率储备)
+    'icloud_deep_analysis_dir': str(Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'RUN'),
+    # 心率参数
+    'max_hr': 190,             # 默认最大心率
+    'resting_hr': 60,          # 默认静息心率
+    # 过滤阈值
+    'max_distance_km': 50,     # 单次跑步最大距离过滤阈值
+    # 深析参数
+    'deep_analysis_max_runs': 5,  # 对比分析取最近 N 次同类型
+    # PDF 尺寸
+    'pdf_height': '1400mm',    # PDF 页面高度默认值
+    'pdf_width': '370mm',      # PDF 页面宽度默认值
 }
 
 # Garmin API 端点 (China 区域)
@@ -145,4 +151,13 @@ GARMIN_API = {
     'activities': '/modern/proxy/activitylist-service/activities',
     'activity_details': '/modern/proxy/activity-service/activity',
     'user_summary': '/modern/proxy/userprofile-service/user-profile',
+}
+
+# 心率区间颜色（供各模块统一使用）
+ZONE_COLORS = {
+    'Z1': '#808080',    # 灰色
+    'Z2': '#87CEEB',    # 天蓝色
+    'Z3': '#32CD32',    # 绿色
+    'Z4': '#FFA500',    # 橙色
+    'Z5': '#FF0000',    # 红色
 }

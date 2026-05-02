@@ -4,8 +4,7 @@ __pycache__/
 *.pyo
 
 # 数据目录
-~/.powerfun/
-.powerfun/
+.data/
 
 # 报告输出
 reports/

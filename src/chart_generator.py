@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 import logging
 import json
 
+from src.config import ZONE_COLORS as _ZONE_COLORS
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,11 +21,11 @@ class ChartGenerator:
     """图表生成器"""
 
     HR_ZONE_COLORS = {
-        'Z1-有氧基础': '#808080',
-        'Z2-有氧耐力': '#87CEEB',
-        'Z3-乳酸阈值': '#32CD32',
-        'Z4-无氧耐力': '#FFA500',
-        'Z5-最大强度': '#FF0000',
+        'Z1-有氧基础': _ZONE_COLORS['Z1'],
+        'Z2-有氧耐力': _ZONE_COLORS['Z2'],
+        'Z3-乳酸阈值': _ZONE_COLORS['Z3'],
+        'Z4-无氧耐力': _ZONE_COLORS['Z4'],
+        'Z5-最大强度': _ZONE_COLORS['Z5'],
     }
 
     CATEGORY_COLORS = {
@@ -51,10 +53,12 @@ class ChartGenerator:
         """将Plotly字典转换为可JSON序列化的字典"""
         return json.loads(json.dumps(fig_dict, default=lambda x: x.tolist() if hasattr(x, 'tolist') else str(x) if isinstance(x, pd.Timestamp) else x))
 
-    def _format_pace(self, seconds: int) -> str:
+    def _format_pace(self, seconds) -> str:
         """将秒数转换为分:秒格式"""
-        minutes = seconds // 60
-        secs = seconds % 60
+        if seconds is None:
+            return "--:--"
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
         return f"{minutes}:{secs:02d}"
 
     def _get_recent_months(self, df: pd.DataFrame, months: int = 12) -> pd.DataFrame:
@@ -549,7 +553,7 @@ class ChartGenerator:
                 y=cat_df['distance'].tolist(),
                 mode='markers',
                 name=name,
-                marker=dict(color=color, size=10, symbol='circle'),
+                marker=dict(color=color, size=6, symbol='circle'),
                 hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>距离: %{y:.1f} km<extra></extra>",
                 customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values], axis=-1)
             ))
@@ -581,61 +585,80 @@ class ChartGenerator:
 
     def create_training_effect_chart(self, df: pd.DataFrame) -> Dict:
         """
-        创建训练效果趋势图
-        - 有氧效果 + 无氧效果双线图
+        创建训练效果面积趋势图
+        - 上线：有氧 + 无氧 总和（平滑折线）
+        - 下线：仅有氧效果（平滑折线）
+        - 两线之间红色填充（宽度 = 无氧训练占比）
+        - Y轴 3-6，保留三条参考线
         - 仅在有氧/无氧效果数据可用时显示
         """
         if df.empty:
             return {}
 
         # 检查是否有训练效果数据
-        has_aerobic = 'aerobic_effect' in df.columns and df['aerobic_effect'].notna().any()
-        has_anaerobic = 'anaerobic_effect' in df.columns and df['anaerobic_effect'].notna().any()
+        has_aerobic = 'aerobic_training_effect' in df.columns and df['aerobic_training_effect'].notna().any()
+        has_anaerobic = 'anaerobic_training_effect' in df.columns and df['anaerobic_training_effect'].notna().any()
 
         if not has_aerobic and not has_anaerobic:
             return {}
 
         df = df.copy().sort_values('date')
-        df['date_str'] = df['date'].dt.strftime('%m-%d')
+
+        # 计算有氧 + 无氧总和
+        if has_aerobic and has_anaerobic:
+            df['total_te'] = df['aerobic_training_effect'] + df['anaerobic_training_effect']
+        elif has_aerobic:
+            df['total_te'] = df['aerobic_training_effect']
+        else:
+            df['total_te'] = df['anaerobic_training_effect']
 
         fig = go.Figure()
 
-        if has_aerobic:
-            fig.add_trace(go.Scatter(
-                x=df['date_str'].tolist(),
-                y=df['aerobic_effect'].tolist(),
-                mode='lines+markers',
-                name='有氧效果',
-                line=dict(color='#4169E1', width=2),
-                marker=dict(size=8, color='#4169E1'),
-                hovertemplate="<b>%{customdata}</b><br>日期: %{x}<br>有氧效果: %{y:.1f}<extra></extra>",
-                customdata=df['title'].values
-            ))
+        # 5次移动平均（平滑处理）
+        if len(df) >= 3:
+            total_smooth = df['total_te'].rolling(window=5, center=True, min_periods=1).mean()
+            aerobic_smooth = df['aerobic_training_effect'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            total_smooth = df['total_te']
+            aerobic_smooth = df['aerobic_training_effect']
 
-        if has_anaerobic:
-            fig.add_trace(go.Scatter(
-                x=df['date_str'].tolist(),
-                y=df['anaerobic_effect'].tolist(),
-                mode='lines+markers',
-                name='无氧效果',
-                line=dict(color='#FF6B6B', width=2),
-                marker=dict(size=8, symbol='diamond', color='#FF6B6B'),
-                hovertemplate="<b>%{customdata}</b><br>日期: %{x}<br>无氧效果: %{y:.1f}<extra></extra>",
-                customdata=df['title'].values
-            ))
+        # 上线：有氧 + 无氧（填充到下线）
+        fig.add_trace(go.Scatter(
+            x=df['date'].tolist(),
+            y=total_smooth.tolist(),
+            mode='lines',
+            name='有氧+无氧',
+            fill=None,
+            line=dict(color='#FF6B6B', width=2, shape='spline', smoothing=1.3),
+            hovertemplate="<b>%{customdata}</b><br>日期: %{x|%Y-%m-%d}<br>有氧+无氧: %{y:.1f}<extra></extra>",
+            customdata=df['title'].values
+        ))
 
-        # 添加参考线
+        # 下线：有氧效果（填充到上线，形成区域）
+        fig.add_trace(go.Scatter(
+            x=df['date'].tolist(),
+            y=aerobic_smooth.tolist(),
+            mode='lines',
+            name='有氧效果',
+            fill='tonexty',
+            fillcolor='rgba(255, 107, 107, 0.25)',
+            line=dict(color='#4169E1', width=2, shape='spline', smoothing=1.3),
+            hovertemplate="<b>%{customdata}</b><br>日期: %{x|%Y-%m-%d}<br>有氧效果: %{y:.1f}<extra></extra>",
+            customdata=df['title'].values
+        ))
+
+        # 添加参考线（Garmin 官方 TE 标准）
         fig.add_hline(y=3.0, line_dash="dot", line_color="#cccccc",
-                      annotation_text="维持健康线")
+                      annotation_text="提升体能")
         fig.add_hline(y=4.0, line_dash="dot", line_color="#999999",
-                      annotation_text="提升体能线")
+                      annotation_text="高度提升")
         fig.add_hline(y=5.0, line_dash="dot", line_color="#FF6B6B",
-                      annotation_text="过度训练线")
+                      annotation_text="过度训练")
 
         fig.update_layout(
             title=None,
-            xaxis=dict(tickangle=-90, title=None, type='category'),
-            yaxis=dict(title='训练效果评分', range=[0, 6]),
+            xaxis=dict(tickangle=-45, title=None, type='date', tickformat='%Y-%m'),
+            yaxis=dict(title='训练效果评分', range=[3, 6]),
             template='plotly_white',
             height=400,
             margin=dict(l=60, r=40, t=40, b=80),
@@ -651,7 +674,7 @@ class ChartGenerator:
         - 直方图 + 核密度估计
         - 仅在有功率数据时显示
         """
-        if df.empty or 'avg_power' not in df.columns or df['avg_power'].notna().sum() < 5:
+        if df.empty or 'avg_power' not in df.columns or df['avg_power'].notna().sum() < 2:
             return {}
 
         power_data = df['avg_power'].dropna()
@@ -672,12 +695,29 @@ class ChartGenerator:
         mean_power = power_data.mean()
         median_power = power_data.median()
 
-        fig.add_vline(x=mean_power, line_dash="dash", line_color="#FF6B6B",
-                      annotation_text=f"平均: {mean_power:.0f}W",
-                      annotation_position="top right")
-        fig.add_vline(x=median_power, line_dash="dot", line_color="#32CD32",
-                      annotation_text=f"中位数: {median_power:.0f}W",
-                      annotation_position="top left")
+        # 平均线（红色虚线）- 靠左
+        fig.add_vline(x=mean_power, line_dash="dash", line_color="#FF6B6B")
+        fig.add_annotation(
+            x=mean_power - 5,   # 向左偏移 5W
+            y=0.95,
+            yref="paper",
+            text=f"平均: {mean_power:.0f}W",
+            showarrow=False,
+            font=dict(color="#FF6B6B", size=11),
+            xanchor="right"
+        )
+
+        # 中位数线（绿色点线）- 靠右
+        fig.add_vline(x=median_power, line_dash="dot", line_color="#32CD32")
+        fig.add_annotation(
+            x=median_power + 5,  # 向右偏移 5W
+            y=0.95,
+            yref="paper",
+            text=f"中位数: {median_power:.0f}W",
+            showarrow=False,
+            font=dict(color="#32CD32", size=11),
+            xanchor="left"
+        )
 
         fig.update_layout(
             title=None,
@@ -711,11 +751,11 @@ class ChartGenerator:
             return {}
 
         zone_colors = {
-            'Z1-有氧基础': '#808080',
-            'Z2-有氧耐力': '#87CEEB',
-            'Z3-乳酸阈值': '#32CD32',
-            'Z4-无氧耐力': '#FFA500',
-            'Z5-最大强度': '#FF0000',
+            'Z1-有氧基础': _ZONE_COLORS['Z1'],
+            'Z2-有氧耐力': _ZONE_COLORS['Z2'],
+            'Z3-乳酸阈值': _ZONE_COLORS['Z3'],
+            'Z4-无氧耐力': _ZONE_COLORS['Z4'],
+            'Z5-最大强度': _ZONE_COLORS['Z5'],
         }
 
         fig = go.Figure()

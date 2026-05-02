@@ -288,7 +288,8 @@ class GarminDataFetcher:
         cached = self._load_cache()
         if cached:
             def _get_id(a):
-                return a.get("activity_id") or a.get("activityId")
+                return (a.get("activity_id") or a.get("activityId") or
+                        a.get("id") or a.get("activityID") or 0)
             existing_ids = {_get_id(a) for a in all_activities if isinstance(a, dict)}
             for a in cached:
                 if isinstance(a, dict) and _get_id(a) not in existing_ids:
@@ -317,6 +318,7 @@ class GarminDataFetcher:
                     logger.warning(
                         f"触发限流 (429)，等待 {wait}s 后重试 ({attempt + 1}/{max_retries})"
                     )
+                    self.close()  # 释放连接，避免等待期间占用资源
                     time.sleep(wait)
                 elif attempt < max_retries - 1:
                     wait = min(2 ** attempt, 60)
@@ -371,7 +373,8 @@ class GarminDataFetcher:
 
         # 合并去重（兼容 activityId 和 activity_id 两种字段名）
         def _get_id(a):
-            return a.get("activity_id") or a.get("activityId")
+            return (a.get("activity_id") or a.get("activityId") or
+                    a.get("id") or a.get("activityID") or 0)
 
         existing_ids = {_get_id(a) for a in cached if isinstance(a, dict)}
         new_count = 0
@@ -383,7 +386,10 @@ class GarminDataFetcher:
                 new_count += 1
 
         # 按时间排序（最新在前）
-        cached.sort(key=lambda x: _get_id(x) or 0, reverse=True)
+        cached.sort(
+            key=lambda x: GarminDataFetcher._parse_activity_date(x) or datetime.min,
+            reverse=True
+        )
 
         with open(self._activities_cache, "w", encoding="utf-8") as f:
             json.dump(cached, f, ensure_ascii=False, indent=2)
@@ -462,5 +468,6 @@ class GarminDataFetcher:
         return None
 
     def close(self):
-        """关闭（兼容性方法）"""
-        pass
+        """重置 garth 客户端状态，释放 HTTP 连接"""
+        import garth
+        garth.client = garth.Client(domain="garmin.cn")

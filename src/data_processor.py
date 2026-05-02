@@ -120,7 +120,7 @@ class DataProcessor:
 
             # 保留额外字段
             for field in self.extra_fields:
-                record[field] = activity.get(field)
+                record[field] = self._extract_extra({}, field, activity)  # garth 格式无 summaryDTO
 
         return record
 
@@ -140,7 +140,7 @@ class DataProcessor:
             "distance_km": "distance",
             "avg_hr": "averageHR",
             "max_hr": "maxHR",
-            "pace_min_per_km": None,  # 需要计算
+            "pace_min_per_km": None,  # 设计意图: 在下方通过 duration/distance 计算，不走 _apply_transform
             "maxSpeed": "maxSpeed",
             "elapsed_min": "duration",
             "calories": "calories",
@@ -193,102 +193,147 @@ class DataProcessor:
         return value
 
     def _extract_from_garth(self, activity: dict, source: str):
-        """从 garth API 格式中提取字段值
-
-        garth connectapi 返回的字段名与 config 中的 source 不完全一致，
-        需要做字段名映射和类型转换。
-        """
-        # source -> garth API 字段名 (手动反向映射，避免字典覆盖问题)
-        source_to_garth = {
-            "startTimeLocal": "startTimeLocal",
-            "activityName": "activityName",
-            "distance_km": "distance",
-            "elapsed_min": "duration",
-            "avg_hr": "averageHR",
-            "max_hr": "maxHR",
-            "maxSpeed": "maxSpeed",
-            "calories": "calories",
-            "avg_cadence": "averageRunningCadenceInStepsPerMinute",
-            "verticalRatio": "avgVerticalRatio",
-            "avg_power": "avgPower",
-            "elevation_gain_m": "elevationGain",
-            "hrTimeInZone_1": "hrTimeInZone_1",
-            "hrTimeInZone_2": "hrTimeInZone_2",
-            "hrTimeInZone_3": "hrTimeInZone_3",
-            "hrTimeInZone_4": "hrTimeInZone_4",
-            "hrTimeInZone_5": "hrTimeInZone_5",
-        }
-
-        garth_field = source_to_garth.get(source)
-        
-        # 特殊处理 activityName：尝试多种字段名
+        """从 garth API 格式中提取字段值（入口方法）"""
         if source == "activityName":
             return activity.get("activity_name") or activity.get("activityName") or activity.get("locationName") or "--"
-        
-        # 兼容活动列表 API 格式（字段名与 connectapi 不同）
-        alt_field_map = {
-            "avg_power": ["avgPower", "averagePower"],  # Garmin.cn 使用 avgPower
-            "max_hr": ["maxHR", "maxHeartRate"],
-            "avg_hr": ["averageHR", "avgHeartRate"],
-        }
-        if source in alt_field_map:
-            for field_name in alt_field_map[source]:
-                value = activity.get(field_name)
-                if value is not None:
-                    return value
-        
+        if source == "maxSpeed":
+            return self._convert_garth_value("maxSpeed", activity.get("maxSpeed"))
+        if source == "pace_min_per_km":
+            return self._extract_pace_from_garth(activity)
+        if source == "activity_type":
+            return self._extract_activity_type(activity)
+        if source.startswith("hrTimeInZone_"):
+            return activity.get(source)
+        if source in ("avg_power", "max_hr", "avg_hr"):
+            return self._extract_hr_power_field(activity, source)
+
+        garth_field = self._GARTH_FIELD_MAP.get(source)
         if garth_field is None:
-            # 特殊处理
-            if source == "pace_min_per_km":
-                dist_m = activity.get("distance", 0)   # meters
-                dur_s = activity.get("duration", 0)     # seconds
-                if dist_m and dur_s and dist_m > 0:
-                    dist_km = dist_m / 1000.0
-                    dur_min = dur_s / 60.0
-                    return dur_min / dist_km
-            elif source == "activityName":
-                # 尝试多种字段名：activity_name (garmer), activityName (garth)
-                return activity.get("activity_name") or activity.get("activityName") or activity.get("locationName") or "--"
-            elif source == "activity_type":
-                act_type = activity.get("activityType", {})
-                if isinstance(act_type, dict):
-                    return act_type.get("typeKey", "running")
-                return str(act_type) if act_type else "running"
-            elif source.startswith("hrTimeInZone_"):
-                # hrTimeInZone 字段直接从 activity 获取
-                return activity.get(source)
             return None
 
         value = activity.get(garth_field)
+        return self._convert_garth_value(garth_field, value)
 
-        # garth API 返回的单位和 garmer summaryDTO 一致:
-        # distance: meters, duration: seconds, speed: m/s
-        # 需要转换为 km, minutes, km/h
-        if garth_field == "distance" and value is not None:
+    # ----------------------------------------------------------
+    # 子方法：按字段类型拆分
+    # ----------------------------------------------------------
+    @staticmethod
+    def _extract_activity_type(activity: dict) -> str:
+        """提取活动类型"""
+        act_type = activity.get("activityType", {})
+        if isinstance(act_type, dict):
+            return act_type.get("typeKey", "running")
+        return str(act_type) if act_type else "running"
+
+    @staticmethod
+    def _extract_pace_from_garth(activity: dict):
+        """从距离和时间计算配速 (min/km)"""
+        dist_m = activity.get("distance", 0)   # meters
+        dur_s = activity.get("duration", 0)     # seconds
+        if dist_m and dur_s and dist_m > 0:
+            dist_km = dist_m / 1000.0
+            dur_min = dur_s / 60.0
+            return dur_min / dist_km
+        return None
+
+    @staticmethod
+    def _extract_hr_power_field(activity: dict, source: str):
+        """提取心率/功率字段（兼容多种字段名）"""
+        alt_field_map = {
+            "avg_power": ["avgPower", "averagePower"],
+            "max_hr": ["maxHR", "maxHeartRate"],
+            "avg_hr": ["averageHR", "avgHeartRate"],
+        }
+        for field_name in alt_field_map.get(source, []):
+            value = activity.get(field_name)
+            if value is not None:
+                return value
+        return None
+
+    # 基础字段映射：source -> garth API 字段名
+    _GARTH_FIELD_MAP = {
+        "startTimeLocal": "startTimeLocal",
+        "activityName": "activityName",
+        "distance": "distance",
+        "elapsed_min": "duration",
+        "calories": "calories",
+        "avg_cadence": "averageRunningCadenceInStepsPerMinute",
+        "verticalRatio": "avgVerticalRatio",
+        "elevation_gain_m": "elevationGain",
+        # 心率区间
+        "hrTimeInZone_1": "hrTimeInZone_1",
+        "hrTimeInZone_2": "hrTimeInZone_2",
+        "hrTimeInZone_3": "hrTimeInZone_3",
+        "hrTimeInZone_4": "hrTimeInZone_4",
+        "hrTimeInZone_5": "hrTimeInZone_5",
+        # 功率区间
+        "powerTimeInZone_1": "powerTimeInZone_1",
+        "powerTimeInZone_2": "powerTimeInZone_2",
+        "powerTimeInZone_3": "powerTimeInZone_3",
+        "powerTimeInZone_4": "powerTimeInZone_4",
+        "powerTimeInZone_5": "powerTimeInZone_5",
+    }
+
+    @staticmethod
+    def _convert_garth_value(garth_field: str, value):
+        """单位转换：garth API 返回的单位转为标准单位"""
+        if value is None:
+            return None
+        if garth_field == "distance":
             return value / 1000.0  # meters -> km
-        elif garth_field == "duration" and value is not None:
+        elif garth_field == "duration":
             return value / 60.0  # seconds -> minutes
-        elif garth_field == "maxSpeed" and value is not None:
+        elif garth_field == "maxSpeed":
             return value * 3.6  # m/s -> km/h
-
         return value
 
     def _extract_extra(self, summary: dict, field: str, activity: dict):
-        """从 summary/activity 中提取额外字段"""
-        extra_map = {
-            "activity_id": lambda: activity.get("activity_id") or activity.get("activityId"),
-            "location": lambda: activity.get("locationName") or activity.get("activity_name", "").replace(" 跑步", ""),
-            "elevation_loss_m": lambda: summary.get("elevationLoss"),
-            "steps": lambda: summary.get("steps") or activity.get("steps"),
-            "training_effect": lambda: summary.get("trainingEffect"),
-            "max_power": lambda: summary.get("maxPower"),
-            "normalized_power": lambda: summary.get("normalizedPower"),
-            "ground_contact_time": lambda: summary.get("groundContactTime"),
-            "start_lat": lambda: summary.get("startLatitude") or activity.get("start_latitude"),
-            "start_lon": lambda: summary.get("startLongitude") or activity.get("start_longitude"),
-        }
-        extractor = extra_map.get(field)
-        return extractor() if extractor else None
+        """从 garth 格式中提取额外字段"""
+        # 直接从 activity 或 summary 获取
+        value = activity.get(field) or summary.get(field)
+        if value is not None:
+            return value
+
+        # 特殊处理需要多字段 fallback 的
+        if field == "training_effect":
+            return summary.get("trainingEffect")
+        elif field == "max_power":
+            return summary.get("maxPower") or activity.get("maxPower")
+        elif field == "normalized_power":
+            return activity.get("normalizedPower") or summary.get("normalizedPower")
+        elif field == "aerobic_training_effect":
+            return activity.get("aerobicTrainingEffect") or summary.get("aerobicTrainingEffect")
+        elif field == "anaerobic_training_effect":
+            return activity.get("anaerobicTrainingEffect") or summary.get("anaerobicTrainingEffect")
+        elif field == "vO2_max":
+            return activity.get("vO2Max") or summary.get("vO2Max")
+        elif field == "bmr_calories":
+            return activity.get("bmrCalories") or summary.get("bmrCalories")
+        elif field == "stride_length":
+            return activity.get("strideLength")
+        elif field == "ground_contact_time":
+            return summary.get("groundContactTime") or activity.get("avgGroundContactTime") or activity.get("groundContactTime")
+        elif field == "activity_id":
+            return activity.get("activity_id") or activity.get("activityId")
+        elif field == "location":
+            return activity.get("locationName") or activity.get("activity_name", "").replace(" 跑步", "")
+        elif field == "elevation_loss_m":
+            return summary.get("elevationLoss")
+        elif field == "steps":
+            return summary.get("steps") or activity.get("steps")
+        elif field == "start_lat":
+            return summary.get("startLatitude") or activity.get("start_latitude")
+        elif field == "start_lon":
+            return summary.get("startLongitude") or activity.get("start_longitude")
+        elif field == "training_effect_label":
+            return activity.get("trainingEffectLabel")
+        elif field == "training_load":
+            return activity.get("activityTrainingLoad")
+        elif field == "aerobic_te_message":
+            return activity.get("aerobicTrainingEffectMessage")
+        elif field == "anaerobic_te_message":
+            return activity.get("anaerobicTrainingEffectMessage")
+        return None
 
     def _apply_transform(self, value, transform: str, source: str = ""):
         """应用字段转换"""
@@ -413,8 +458,10 @@ class DataProcessor:
     def _derive(self, df: pd.DataFrame) -> pd.DataFrame:
         """派生字段计算"""
         # 保留原始数值 duration (分钟) 供分析器使用
-        # duration 列已经是 hh:mm:ss 字符串，新增 duration_min 数值列
-        if "duration" in df.columns:
+        # garth 格式下 elapsed_min 已经是分钟数值，直接使用
+        if "elapsed_min" in df.columns and "duration_min" not in df.columns:
+            df["duration_min"] = df["elapsed_min"]
+        elif "duration" in df.columns:
             def parse_duration_to_min(val):
                 if pd.isna(val) or not isinstance(val, str):
                     return None
@@ -444,16 +491,22 @@ class DataProcessor:
                 return None
             df["pace_min_per_km"] = df["avg_pace"].apply(parse_pace_to_min)
 
-        # 配速 (min/km) — 如果还没有的话
-        if "pace_min_per_km" not in df.columns and "distance" in df.columns:
-            pass
+        # 检查 pace_min_per_km 是否存在
+        if "pace_min_per_km" not in df.columns or df["pace_min_per_km"].isna().all():
+            logger.error("关键数据缺失: pace_min_per_km（平均配速）未从 Garmin API 获取，无法继续分析。")
+            raise ValueError("pace_min_per_km 数据缺失，请确保 Garmin API 返回配速数据后再运行分析。")
 
-        # 配速等级
-        if "pace_min_per_km" in df.columns:
-            from src.config import PACE_LEVELS
-            df["pace_level"] = df["pace_min_per_km"].apply(
-                lambda p: self._classify_pace(p, PACE_LEVELS) if pd.notna(p) else ""
-            )
+        # 检查有多少条记录的配速为空
+        missing_pace_count = df["pace_min_per_km"].isna().sum()
+        if missing_pace_count > 0:
+            logger.warning(f"{missing_pace_count} 条记录的 pace_min_per_km 为空（可能为异常数据），将跳过这些记录。")
+
+        # 配速 (min/km) — 如果还没有的话，从 distance/duration_min 反推（仅作为兜底）
+        if "pace_min_per_km" not in df.columns and "distance" in df.columns and "duration_min" in df.columns:
+            df["pace_min_per_km"] = df.apply(
+                lambda r: r["distance"] / r["duration_min"]
+                if r["duration_min"] and r["distance"] and r["duration_min"] > 0
+                else None, axis=1)
 
         # 日期相关派生
         if "date" in df.columns:
@@ -497,14 +550,6 @@ class DataProcessor:
         secs = int(seconds % 60)
         return f"{minutes}:{secs:02d}"
 
-    @staticmethod
-    def _classify_pace(pace_min_per_km: float, pace_levels: dict) -> str:
-        """根据配速分类等级"""
-        for level, config in pace_levels.items():
-            if pace_min_per_km <= config["max"]:
-                return f"{config['emoji']} {level}"
-        return "🚶 休闲"
-
     def validate(self, df: pd.DataFrame) -> dict:
         """数据质量校验"""
         issues = {}
@@ -539,9 +584,8 @@ class DataProcessor:
         # 选择输出列
         output_cols = [
             "date_str", "distance", "avg_hr", "max_hr", "avg_pace",
-            "best_pace", "duration", "calories", "cadence",
+            "best_pace", "duration_min", "calories", "cadence",
             "vertical_ratio", "avg_power", "elevation_gain",
-            "pace_level",
         ]
         available = [c for c in output_cols if c in df.columns]
         export_df = df[available].copy()
