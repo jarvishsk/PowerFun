@@ -177,12 +177,9 @@ def _export_csv(df: pd.DataFrame, csv_path: Path) -> None:
 
 def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           analysis_dir: Path, output_dir: Path,
-                          max_hr: int = None, resting_hr: int = None,
+                          max_hr: int, resting_hr: int,
                           fetcher=None) -> str:
-    """对单次跑步生成深度分析报告（HTML + PDF + iCloud 备份）"""
-    # 使用传入的值，如果未传入则使用配置中的默认值
-    max_hr = max_hr or DEFAULT_CONFIG.get('max_hr')
-    resting_hr = resting_hr or DEFAULT_CONFIG.get('resting_hr')
+    """对单次跑步生成深度分析报告"""
     
     from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
     from src.analysis_report import AnalysisReportGenerator
@@ -308,14 +305,12 @@ def _print_summary(stats: dict):
 
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
-                 max_hr: int = None, resting_hr: int = None) -> None:
+                 max_hr: int, resting_hr: int) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
+    max_hr 和 resting_hr 由 argparse 默认从 DEFAULT_CONFIG 读取。
     """
-    # 使用传入的值，如果未传入则使用配置中的默认值
-    max_hr = max_hr or DEFAULT_CONFIG.get('max_hr')
-    resting_hr = resting_hr or DEFAULT_CONFIG.get('resting_hr')
     
     if args.dry_run:
         logger.info("Dry-run 模式，跳过报告生成")

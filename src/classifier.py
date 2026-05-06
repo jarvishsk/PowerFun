@@ -31,7 +31,7 @@ class HeartRateClassifier:
         'Z1': {
             'name': '有氧基础',
             'name_en': 'Aerobic Base',
-            'range': (61, 156),  # 60+130*0.01=61.3, 60+130*0.74=156.2
+            'range': None,  # 运行时根据 USER_CONFIG 动态计算，此处为占位值
             'percent': (HR_ZONE_PERCENTAGES['Z1']['min_pct'], HR_ZONE_PERCENTAGES['Z1']['max_pct']),
             'color': ZONE_COLORS['Z1'],
             'emoji': '🩶',
@@ -40,7 +40,7 @@ class HeartRateClassifier:
         'Z2': {
             'name': '有氧耐力',
             'name_en': 'Aerobic Endurance',
-            'range': (157, 169),
+            'range': None,
             'percent': (HR_ZONE_PERCENTAGES['Z2']['min_pct'], HR_ZONE_PERCENTAGES['Z2']['max_pct']),
             'color': ZONE_COLORS['Z2'],
             'emoji': '🩵',
@@ -49,7 +49,7 @@ class HeartRateClassifier:
         'Z3': {
             'name': '乳酸阈值',
             'name_en': 'Lactate Threshold',
-            'range': (170, 174),
+            'range': None,
             'percent': (HR_ZONE_PERCENTAGES['Z3']['min_pct'], HR_ZONE_PERCENTAGES['Z3']['max_pct']),
             'color': ZONE_COLORS['Z3'],
             'emoji': '🟢',
@@ -58,7 +58,7 @@ class HeartRateClassifier:
         'Z4': {
             'name': '无氧耐力',
             'name_en': 'Anaerobic Endurance',
-            'range': (175, 182),
+            'range': None,
             'percent': (HR_ZONE_PERCENTAGES['Z4']['min_pct'], HR_ZONE_PERCENTAGES['Z4']['max_pct']),
             'color': ZONE_COLORS['Z4'],
             'emoji': '🟠',
@@ -67,7 +67,7 @@ class HeartRateClassifier:
         'Z5': {
             'name': '最大强度',
             'name_en': 'Maximum Effort',
-            'range': (183, 190),
+            'range': None,
             'percent': (HR_ZONE_PERCENTAGES['Z5']['min_pct'], HR_ZONE_PERCENTAGES['Z5']['max_pct']),
             'color': ZONE_COLORS['Z5'],
             'emoji': '🔴',

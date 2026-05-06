@@ -48,6 +48,12 @@ class ChartGenerator:
 
     def __init__(self, max_points: int = 50):
         self.max_points = max_points
+        # 公共布局样式
+        self._common_layout_style = {
+            'margin': dict(l=60, r=40, t=40, b=60),
+            'template': 'plotly_white',
+            'legend': dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        }
 
     def _to_js_dict(self, fig_dict: Dict) -> Dict:
         """将Plotly字典转换为可JSON序列化的字典"""
@@ -208,11 +214,10 @@ class ChartGenerator:
                 ticktext=['5:15', '5:30', '5:45', '6:00', '6:15', '6:30', '6:45', '7:00', '7:15', '7:30', '7:45', '8:00']
             ),
             yaxis2=dict(title='心率 (bpm)', range=[120, 180]),
-            legend=dict(orientation='h', yanchor='bottom', y=1.15, xanchor='center', x=0.5),
             hovermode='x unified',
-            template='plotly_white',
             height=500,
             margin=dict(l=80, r=60, t=120, b=80),
+            **self._common_layout_style,
         )
 
         fig_dict = fig.to_dict()
@@ -252,9 +257,8 @@ class ChartGenerator:
             title=None,
             xaxis=dict(tickangle=0, title=None, type='category'),
             yaxis=dict(title='跑量 (km)'),
-            template='plotly_white',
             height=400,
-            margin=dict(l=60, r=40, t=40, b=60)
+            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
@@ -288,11 +292,11 @@ class ChartGenerator:
 
         fig.update_layout(
             title=None,
-            template='plotly_white',
             height=400,
             showlegend=False,
             # 增加顶部margin,给按钮留出空间
             margin=dict(l=40, r=40, t=100, b=40),
+            template='plotly_white',
             updatemenus=[
                 dict(
                     type='buttons',
@@ -419,11 +423,11 @@ class ChartGenerator:
 
         fig.update_layout(
             title=None,
-            template='plotly_white',
             height=400,
             showlegend=False,
             # 增加顶部margin,给按钮留出空间
             margin=dict(l=40, r=40, t=100, b=40),
+            template='plotly_white',
             updatemenus=[
                 dict(
                     type='buttons',
@@ -504,10 +508,8 @@ class ChartGenerator:
             xaxis=dict(tickangle=0, title=None, type='category'),
             yaxis=dict(title='时长 (分钟)'),
             barmode='stack',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            template='plotly_white',
             height=450,
-            margin=dict(l=60, r=40, t=60, b=60)
+            **self._common_layout_style
         )
         
         return self._to_js_dict(fig.to_dict())
@@ -574,11 +576,9 @@ class ChartGenerator:
             title=None,
             xaxis=dict(tickangle=-45, title=None, type='date', tickformat='%m-%d'),
             yaxis=dict(title='距离 (km)'),
-            template='plotly_white',
             height=400,
-            margin=dict(l=60, r=40, t=40, b=80),
             hovermode='x unified',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
+            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
@@ -691,11 +691,9 @@ class ChartGenerator:
             title=None,
             xaxis=dict(tickangle=-45, title=None, type='date', tickformat='%Y-%m'),
             yaxis=dict(title='训练效果评分', range=[3, 8.5]),
-            template='plotly_white',
             height=400,
-            margin=dict(l=60, r=60, t=40, b=80),
             hovermode='x unified',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
+            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
@@ -755,17 +753,10 @@ class ChartGenerator:
             title=None,
             xaxis=dict(title='平均功率 (W)'),
             yaxis=dict(title='次数'),
-            template='plotly_white',
             height=400,
             margin=dict(l=60, r=80, t=80, b=60),  # 增加右边和顶部边距
             bargap=0.05,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
+            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
@@ -809,11 +800,9 @@ class ChartGenerator:
             xaxis=dict(title='平均心率 (bpm)'),
             yaxis=dict(title='次数'),
             barmode='stack',
-            template='plotly_white',
             height=400,
-            margin=dict(l=60, r=40, t=40, b=60),
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-            bargap=0.05
+            bargap=0.05,
+            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
@@ -1008,11 +997,9 @@ class ChartGenerator:
                     ticktext=tick_texts,
                     range=[max_pace + y_padding, max(min_pace - y_padding, 0)],
                 ),
-                template='plotly_white',
                 height=450,
-                margin=dict(l=60, r=60, t=40, b=60),
                 hovermode='x unified',
-                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+                **self._common_layout_style,
             )
             
             fig_dict = self._to_js_dict(fig.to_dict())
@@ -1144,11 +1131,9 @@ class ChartGenerator:
                     title='心率 (bpm)',
                     range=hr_range,
                 ),
-                template='plotly_white',
                 height=450,
-                margin=dict(l=60, r=60, t=40, b=60),
                 hovermode='x unified',
-                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+                **self._common_layout_style,
             )
             
             fig_dict = self._to_js_dict(fig.to_dict())

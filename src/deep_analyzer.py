@@ -21,7 +21,7 @@ class DeepRunAnalyzer:
     DEFAULT_MAX_HR = DEFAULT_CONFIG.get('max_hr')
     DEFAULT_RESTING_HR = DEFAULT_CONFIG.get('resting_hr')
 
-    def __init__(self, df_all: pd.DataFrame, target_date=None, max_hr=None, resting_hr=None,
+    def __init__(self, df_all: pd.DataFrame, target_date=None, max_hr: int = None, resting_hr: int = None,
                  lap_data: dict = None):
         """
         Args:
@@ -33,8 +33,9 @@ class DeepRunAnalyzer:
         """
         self.df_all = df_all
         self.target_date = target_date
-        self.max_hr = max_hr if max_hr is not None else self.DEFAULT_MAX_HR
-        self.resting_hr = resting_hr if resting_hr is not None else self.DEFAULT_RESTING_HR
+        # 使用传入值，未传入时从 DEFAULT_CONFIG 读取
+        self.max_hr = max_hr or self.DEFAULT_MAX_HR
+        self.resting_hr = resting_hr or self.DEFAULT_RESTING_HR
         self.lap_data = lap_data or {}
     
     def analyze(self, row: pd.Series) -> dict:
