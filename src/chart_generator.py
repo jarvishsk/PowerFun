@@ -50,7 +50,6 @@ class ChartGenerator:
         self.max_points = max_points
         # 公共布局样式
         self._common_layout_style = {
-            'margin': dict(l=60, r=40, t=40, b=60),
             'template': 'plotly_white',
             'legend': dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
         }
@@ -213,11 +212,11 @@ class ChartGenerator:
                 tickvals=[315, 330, 345, 360, 375, 390, 405, 420, 435, 450, 465, 480],
                 ticktext=['5:15', '5:30', '5:45', '6:00', '6:15', '6:30', '6:45', '7:00', '7:15', '7:30', '7:45', '8:00']
             ),
+            **self._common_layout_style,
             yaxis2=dict(title='心率 (bpm)', range=[120, 180]),
             hovermode='x unified',
             height=500,
             margin=dict(l=80, r=60, t=120, b=80),
-            **self._common_layout_style,
         )
 
         fig_dict = fig.to_dict()
@@ -750,13 +749,13 @@ class ChartGenerator:
         )
 
         fig.update_layout(
+            **self._common_layout_style,
             title=None,
             xaxis=dict(title='平均功率 (W)'),
             yaxis=dict(title='次数'),
             height=400,
             margin=dict(l=60, r=80, t=80, b=60),  # 增加右边和顶部边距
             bargap=0.05,
-            **self._common_layout_style
         )
 
         return self._to_js_dict(fig.to_dict())
