@@ -492,24 +492,36 @@ class DeepRunAnalyzer:
 
 
 class LLMReportGenerator:
-    """LLM 文字报告生成器（使用百炼标准端点）"""
+    """LLM 文字报告生成器（使用本地模型）"""
     
-    API_KEY_ENV_VARS = [
-        'OPENCLAW_ALIYUN_API_KEY',
-        'OPENCLAW_BAILIAN_API_KEY',  # fallback，但 Coding Plan key 可能不支持非编码场景
-    ]
-    API_MODEL = 'qwen3.6-plus'
-    API_HOST = 'dashscope.aliyuncs.com'
-    API_PATH = '/compatible-mode/v1/chat/completions'
+    # 百炼标准端点（已注释，待测试本地模型后恢复）
+    # API_KEY_ENV_VARS = [
+    #     'OPENCLAW_ALIYUN_API_KEY',
+    #     'OPENCLAW_BAILIAN_API_KEY',
+    # ]
+    # API_MODEL = 'qwen3.6-plus'
+    # API_HOST = 'dashscope.aliyuncs.com'
+    # API_PATH = '/compatible-mode/v1/chat/completions'
+    
+    # 本地模型配置
+    API_MODEL = 'gemma-4-E4B-it-MLX-4bit'
+    API_HOST = '127.0.0.1'
+    API_PORT = 11333
+    API_PATH = '/v1/chat/completions'
+    API_KEY = 'omlx-ckbwwxh30wydrnra'
     
     def __init__(self):
         self.api_key = self._load_api_key()
     
     def _load_api_key(self) -> str:
-        for env_var in self.API_KEY_ENV_VARS:
-            key = os.environ.get(env_var, '')
-            if key:
-                return key
+        # 本地模型：直接使用硬编码 key
+        if hasattr(self, 'API_KEY') and self.API_KEY:
+            return self.API_KEY
+        # 百炼：从环境变量读取（已注释）
+        # for env_var in self.API_KEY_ENV_VARS:
+        #     key = os.environ.get(env_var, '')
+        #     if key:
+        #         return key
         return ''
     
     def generate(self, analysis_data: dict) -> str:
@@ -657,12 +669,23 @@ class LLMReportGenerator:
         return '\n'.join(lines) + '\n'
     
     def _call_api(self, prompt: str) -> str:
-        """调用 Bailian API（默认参数）"""
-        return self._call_llm(prompt, api_key=self.api_key, max_tokens=2000, temperature=0.7)
+        """调用 LLM API（默认参数）"""
+        return self._call_llm(
+            prompt,
+            api_key=self.api_key,
+            model=self.API_MODEL,
+            host=self.API_HOST,
+            port=getattr(self, 'API_PORT', None),
+            path=self.API_PATH,
+            max_tokens=2000,
+            temperature=0.7
+        )
     
     @staticmethod
-    def _call_llm(prompt: str, api_key: str = None, max_tokens: int = 2000,
-                  temperature: float = 0.7) -> str:
+    def _call_llm(prompt: str, api_key: str = None, model: str = 'qwen3.6-plus',
+                  host: str = 'dashscope.aliyuncs.com', port: int = None,
+                  path: str = '/compatible-mode/v1/chat/completions',
+                  max_tokens: int = 2000, temperature: float = 0.7) -> str:
         """通用 LLM 调用方法（供 brief_summary 和 _call_api 复用）"""
         import time
         headers = {
@@ -670,16 +693,22 @@ class LLMReportGenerator:
             'Authorization': f'Bearer {api_key}',
         }
         body = json.dumps({
-            'model': 'qwen3.6-plus',
+            'model': model,
             'messages': [{'role': 'user', 'content': prompt}],
             'max_tokens': max_tokens,
             'temperature': temperature,
         }).encode('utf-8')
         
+        # 本地模型用 HTTP，云端用 HTTPS
+        conn_factory = http.client.HTTPConnection if host.startswith('127.') or host == 'localhost' else http.client.HTTPSConnection
+        
         for attempt in range(3):
-            conn = http.client.HTTPSConnection('dashscope.aliyuncs.com', timeout=120)
+            if port:
+                conn = conn_factory(f'{host}:{port}', timeout=120)
+            else:
+                conn = conn_factory(host, timeout=120)
             try:
-                conn.request('POST', '/compatible-mode/v1/chat/completions', body=body, headers=headers)
+                conn.request('POST', path, body=body, headers=headers)
                 resp = conn.getresponse()
                 data = json.loads(resp.read().decode('utf-8'))
                 
