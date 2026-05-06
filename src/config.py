@@ -118,6 +118,27 @@ EXTRA_FIELDS = [
 ]
 
 # ============================================================
+# 📝 用户可配置参数（首次使用时按实测数据修改）
+# ============================================================
+# max_hr: 最大心率（实测值，不同用户不同）
+# resting_hr: 静息心率（实测值，不同用户不同）
+USER_CONFIG = {
+    'max_hr': 188,
+    'resting_hr': 60,
+}
+
+# ============================================================
+# 心率区间定义（Karvonen HRR 法固定百分比，禁止修改）
+# ============================================================
+HR_ZONE_PERCENTAGES = {
+    'Z1': {'min_pct': 0.01, 'max_pct': 0.74,  'name': '有氧基础',     'name_en': 'Aerobic Base',       'purpose': '恢复跑、基础有氧'},
+    'Z2': {'min_pct': 0.74, 'max_pct': 0.84,  'name': '有氧耐力',     'name_en': 'Aerobic Endurance',  'purpose': 'MAF训练、LSD'},
+    'Z3': {'min_pct': 0.84, 'max_pct': 0.88,  'name': '乳酸阈值',     'name_en': 'Lactate Threshold',  'purpose': 'Tempo跑、半马配速'},
+    'Z4': {'min_pct': 0.88, 'max_pct': 0.94,  'name': '无氧耐力',     'name_en': 'Anaerobic Endurance', 'purpose': '间歇训练、10K配速'},
+    'Z5': {'min_pct': 0.94, 'max_pct': 1.00,  'name': '最大强度',     'name_en': 'Maximum Effort',     'purpose': '冲刺、最大心率训练'},
+}
+
+# ============================================================
 # 默认配置
 # ============================================================
 DEFAULT_CONFIG = {
@@ -129,11 +150,11 @@ DEFAULT_CONFIG = {
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时
     'page_size': 100,             # Garmin API 分页大小
     'default_date_range_days': 30,
-    'hr_zone_method': 'max_hr',   # 心率区间计算方法: max_hr | hrr (心率储备)
+    'hr_zone_method': 'hrr',        # 心率区间计算方法: Garmin 原生数据与本地计算均使用 Karvonen HRR（心率储备法）
     'icloud_deep_analysis_dir': str(Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'RUN'),
     # 心率参数
-    'max_hr': 188,             # 默认最大心率（老板实测）
-    'resting_hr': 60,          # 默认静息心率
+    'max_hr': USER_CONFIG.get('max_hr'),             # 默认最大心率（老板实测）
+    'resting_hr': USER_CONFIG.get('resting_hr'),          # 默认静息心率
     # 过滤阈值
     'max_distance_km': 50,     # 单次跑步最大距离过滤阈值
     # 深析参数

@@ -8,7 +8,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-from src.config import DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG, HR_ZONE_PERCENTAGES
 from src.classifier import HeartRateClassifier
 
 logger = logging.getLogger("PowerFun.deep_analyzer")
@@ -18,8 +18,8 @@ class DeepRunAnalyzer:
     """跑步深度分析器"""
 
     # 心率默认值（从 DEFAULT_CONFIG 统一读取）
-    DEFAULT_MAX_HR = DEFAULT_CONFIG.get('max_hr', 190)
-    DEFAULT_RESTING_HR = DEFAULT_CONFIG.get('resting_hr', 60)
+    DEFAULT_MAX_HR = DEFAULT_CONFIG.get('max_hr')
+    DEFAULT_RESTING_HR = DEFAULT_CONFIG.get('resting_hr')
 
     def __init__(self, df_all: pd.DataFrame, target_date=None, max_hr=None, resting_hr=None,
                  lap_data: dict = None):
@@ -106,19 +106,14 @@ class DeepRunAnalyzer:
         max_hr = row.get('max_hr') if pd.notna(row.get('max_hr')) else self.max_hr
         resting_hr = row.get('resting_hr') if pd.notna(row.get('resting_hr')) else self.resting_hr
         
-        # 使用 classifier.py 中的 ZONES 定义
-        zones_def = {}
-        for zone_id, zone_info in HeartRateClassifier.ZONES.items():
-            percent = zone_info['percent']
-            zones_def[zone_id] = {'min_pct': percent[0], 'max_pct': percent[1]}
-        
+        # 使用 HR_ZONE_PERCENTAGES 定义（Karvonen HRR 法固定百分比）
         HRR = max_hr - resting_hr
         result = {}
-        for zone_key, zone_info in zones_def.items():
+        for zone_key, zone_info in HR_ZONE_PERCENTAGES.items():
             min_hr = int(resting_hr + HRR * zone_info['min_pct'])
             max_hr_val = int(resting_hr + HRR * zone_info['max_pct'])
             result[zone_key] = {
-                'label': HeartRateClassifier.ZONES[zone_key]['name'],
+                'label': zone_info['name'],
                 'min_hr': min_hr,
                 'max_hr': max_hr_val
             }

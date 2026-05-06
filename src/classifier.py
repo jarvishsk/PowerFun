@@ -8,7 +8,7 @@ import numpy as np
 from typing import Tuple, Optional, Dict
 import logging
 
-from src.config import DEFAULT_CONFIG, ZONE_COLORS
+from src.config import DEFAULT_CONFIG, ZONE_COLORS, HR_ZONE_PERCENTAGES
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +22,17 @@ class HeartRateClassifier:
     """
     
     # 默认心率参数（从 DEFAULT_CONFIG 读取）
-    DEFAULT_HR_MAX = DEFAULT_CONFIG.get('max_hr', 190)
-    DEFAULT_HR_REST = DEFAULT_CONFIG.get('resting_hr', 60)
+    DEFAULT_HR_MAX = DEFAULT_CONFIG.get('max_hr')
+    DEFAULT_HR_REST = DEFAULT_CONFIG.get('resting_hr')
     
-    # 心率区间定义 (Z1范围已扩大至1%-74%)
+    # 心率区间定义 (区间百分比来自 HR_ZONE_PERCENTAGES（Karvonen HRR 固定值，不可修改）)
     # 注意: 这是类级别的共享字典，__init__ 中会 deepcopy 到实例级别
     ZONES = {
         'Z1': {
             'name': '有氧基础',
             'name_en': 'Aerobic Base',
             'range': (61, 156),  # 60+130*0.01=61.3, 60+130*0.74=156.2
-            'percent': (0.01, 0.74),
+            'percent': (HR_ZONE_PERCENTAGES['Z1']['min_pct'], HR_ZONE_PERCENTAGES['Z1']['max_pct']),
             'color': ZONE_COLORS['Z1'],
             'emoji': '🩶',
             'purpose': '恢复跑、基础有氧'
@@ -41,7 +41,7 @@ class HeartRateClassifier:
             'name': '有氧耐力',
             'name_en': 'Aerobic Endurance',
             'range': (157, 169),
-            'percent': (0.74, 0.84),
+            'percent': (HR_ZONE_PERCENTAGES['Z2']['min_pct'], HR_ZONE_PERCENTAGES['Z2']['max_pct']),
             'color': ZONE_COLORS['Z2'],
             'emoji': '🩵',
             'purpose': 'MAF训练、LSD'
@@ -50,7 +50,7 @@ class HeartRateClassifier:
             'name': '乳酸阈值',
             'name_en': 'Lactate Threshold',
             'range': (170, 174),
-            'percent': (0.84, 0.88),
+            'percent': (HR_ZONE_PERCENTAGES['Z3']['min_pct'], HR_ZONE_PERCENTAGES['Z3']['max_pct']),
             'color': ZONE_COLORS['Z3'],
             'emoji': '🟢',
             'purpose': 'Tempo跑、半马配速'
@@ -59,7 +59,7 @@ class HeartRateClassifier:
             'name': '无氧耐力',
             'name_en': 'Anaerobic Endurance',
             'range': (175, 182),
-            'percent': (0.88, 0.94),
+            'percent': (HR_ZONE_PERCENTAGES['Z4']['min_pct'], HR_ZONE_PERCENTAGES['Z4']['max_pct']),
             'color': ZONE_COLORS['Z4'],
             'emoji': '🟠',
             'purpose': '间歇训练、10K配速'
@@ -68,7 +68,7 @@ class HeartRateClassifier:
             'name': '最大强度',
             'name_en': 'Maximum Effort',
             'range': (183, 190),
-            'percent': (0.94, 1.00),
+            'percent': (HR_ZONE_PERCENTAGES['Z5']['min_pct'], HR_ZONE_PERCENTAGES['Z5']['max_pct']),
             'color': ZONE_COLORS['Z5'],
             'emoji': '🔴',
             'purpose': '冲刺、最大心率训练'

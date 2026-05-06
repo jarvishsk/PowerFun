@@ -66,7 +66,7 @@ import pandas as pd
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.config import DEFAULT_CONFIG, FIELD_MAPPING
+from src.config import DEFAULT_CONFIG, USER_CONFIG, HR_ZONE_PERCENTAGES, FIELD_MAPPING
 from src.data_fetcher import GarminDataFetcher, AuthenticationError
 from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
@@ -111,8 +111,8 @@ def parse_args():
     parser.add_argument("--email", help="Garmin Connect 账号")
     parser.add_argument("--password", help="Garmin Connect 密码")
     parser.add_argument("--days", type=int, default=30, help="拉取天数 (默认 30)")
-    parser.add_argument("--max-hr", type=int, default=190, help="最大心率 (默认 190)")
-    parser.add_argument("--resting-hr", type=int, default=60, help="静息心率 (默认 60)")
+    parser.add_argument("--max-hr", type=int, default=DEFAULT_CONFIG.get('max_hr'), help=f"最大心率 (默认 {DEFAULT_CONFIG.get('max_hr')})")
+    parser.add_argument("--resting-hr", type=int, default=DEFAULT_CONFIG.get('resting_hr'), help=f"静息心率 (默认 {DEFAULT_CONFIG.get('resting_hr')})")
     parser.add_argument("--output", type=str, default=None, help="报告输出目录")
     parser.add_argument("--dry-run", action="store_true", help="仅拉取数据，不生成报告")
     parser.add_argument("--json-out", type=str, default=None, help="输出 JSON 数据文件")
@@ -177,9 +177,13 @@ def _export_csv(df: pd.DataFrame, csv_path: Path) -> None:
 
 def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           analysis_dir: Path, output_dir: Path,
-                          max_hr: int = 190, resting_hr: int = 60,
+                          max_hr: int = None, resting_hr: int = None,
                           fetcher=None) -> str:
     """对单次跑步生成深度分析报告（HTML + PDF + iCloud 备份）"""
+    # 使用传入的值，如果未传入则使用配置中的默认值
+    max_hr = max_hr or DEFAULT_CONFIG.get('max_hr')
+    resting_hr = resting_hr or DEFAULT_CONFIG.get('resting_hr')
+    
     from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
     from src.analysis_report import AnalysisReportGenerator
     from src.chart_generator import ChartGenerator
@@ -304,11 +308,15 @@ def _print_summary(stats: dict):
 
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
-                 max_hr: int, resting_hr: int) -> None:
+                 max_hr: int = None, resting_hr: int = None) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
     """
+    # 使用传入的值，如果未传入则使用配置中的默认值
+    max_hr = max_hr or DEFAULT_CONFIG.get('max_hr')
+    resting_hr = resting_hr or DEFAULT_CONFIG.get('resting_hr')
+    
     if args.dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
         return
