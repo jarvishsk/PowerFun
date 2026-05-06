@@ -385,6 +385,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
             logger.info(f"✅ 批量深度分析完成: 共生成 {count} 条新报告")
 
+        return
+
     # ----------------------------------------------------------
     # Step 7: 生成可视化图表
     # ----------------------------------------------------------
@@ -393,15 +395,45 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     charts_data = chart_gen.generate_all_charts(df)
     logger.info(f"✅ 已生成 {len(charts_data)} 个图表")
 
-    # ----------------------------------------------------------
-    # Step 8: 生成深度分析报告（最近一次跑步）— 先生成，主报告才能链接到它
-    # ----------------------------------------------------------
-    logger.info("Step 8/10: 生成深度分析报告（最近一次跑步）...")
-    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
-    from src.analysis_report import AnalysisReportGenerator
-
+    # 确保深析报告目录存在（综合报告需要扫描此目录）
     analysis_dir = output_dir / "PowerFun_Reports"
     analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    # ----------------------------------------------------------
+    # Step 8: 生成 HTML 综合报告
+    # ----------------------------------------------------------
+    logger.info("Step 8/10: 生成 HTML 报告...")
+
+    main_report_path = str(output_dir / "PowerFun.html")
+
+    report_gen = ReportGenerator()
+    report_gen.generate_html(df, charts_data, stats, main_report_path,
+                             analysis_dir=str(analysis_dir))
+
+    logger.info("=" * 60)
+    logger.info(f"✅ 主报告已生成: {main_report_path}")
+    logger.info("=" * 60)
+
+    # ----------------------------------------------------------
+    # Step 9: 生成 PDF 综合报告
+    # ----------------------------------------------------------
+    logger.info("Step 9/10: 生成 PDF 报告...")
+    local_pdf = str(output_dir / '综合分析报告.pdf')
+    os.makedirs(os.path.dirname(local_pdf), exist_ok=True)
+    generate_pdf(
+        html_path=main_report_path,
+        output_path=local_pdf,
+        icloud_dir=DEFAULT_CONFIG['icloud_deep_analysis_dir'],
+        height=DEFAULT_CONFIG['pdf_height'],
+        width=DEFAULT_CONFIG['pdf_width'],
+    )
+
+    # ----------------------------------------------------------
+    # Step 10: 生成深度分析报告（最近一次跑步）
+    # ----------------------------------------------------------
+    logger.info("Step 10/10: 生成深度分析报告（最近一次跑步）...")
+    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+    from src.analysis_report import AnalysisReportGenerator
 
     # 加载分圈数据
     latest_run = df.iloc[-1]  # DataFrame 已按日期排序
@@ -473,35 +505,6 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
     logger.info(f"✅ 深度分析报告已生成: {html_path}")
     logger.info(f"   PDF: {pdf_path}")
-
-    # ----------------------------------------------------------
-    # Step 9: 生成 HTML 报告（此时深析报告已存在，链接正确）
-    # ----------------------------------------------------------
-    logger.info("Step 9/10: 生成 HTML 报告...")
-
-    main_report_path = str(output_dir / "PowerFun.html")
-
-    report_gen = ReportGenerator()
-    report_gen.generate_html(df, charts_data, stats, main_report_path,
-                             analysis_dir=str(analysis_dir))
-
-    logger.info("=" * 60)
-    logger.info(f"✅ 主报告已生成: {main_report_path}")
-    logger.info("=" * 60)
-
-    # ----------------------------------------------------------
-    # Step 10: 生成 PDF 报告
-    # ----------------------------------------------------------
-    logger.info("Step 10/10: 生成 PDF 报告...")
-    local_pdf = str(output_dir / '综合分析报告.pdf')
-    os.makedirs(os.path.dirname(local_pdf), exist_ok=True)
-    generate_pdf(
-        html_path=main_report_path,
-        output_path=local_pdf,
-        icloud_dir=DEFAULT_CONFIG['icloud_deep_analysis_dir'],
-        height=DEFAULT_CONFIG['pdf_height'],
-        width=DEFAULT_CONFIG['pdf_width'],
-    )
 
     _print_summary(stats)
 
