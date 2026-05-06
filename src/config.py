@@ -176,6 +176,30 @@ GARMIN_API = {
     'user_summary': '/modern/proxy/userprofile-service/user-profile',
 }
 
+# ============================================================
+# 🤖 LLM 配置（深度分析报告 AI 教练点评）
+# ============================================================
+# API Key 从环境变量读取：POWERFUN_LLM_API_KEY
+# 如需修改模型、Host、端口等，编辑下方 LLM_CONFIG
+
+import os as _os
+
+LLM_CONFIG = {
+    # 模型名称
+    'model': 'gemma-4-E4B-it-MLX-4bit',
+    # API 服务地址
+    'host': '127.0.0.1',
+    'port': 11333,              # 本地模型需要端口，云端可设为 None
+    'path': '/v1/chat/completions',
+    # 本地模型用 HTTP，云端自动切换 HTTPS
+    'use_http': True,           # True=HTTP, False=HTTPS
+    # 生成参数
+    'max_tokens': 2000,
+    'temperature': 0.7,
+    # API Key：从环境变量读取（优先 POWERFUN_LLM_API_KEY，其次 OPENCLAW_ALIYUN_API_KEY）
+    'api_key': _os.environ.get('POWERFUN_LLM_API_KEY', _os.environ.get('OPENCLAW_ALIYUN_API_KEY', '')),
+}
+
 # 心率区间颜色（供各模块统一使用）
 ZONE_COLORS = {
     'Z1': '#808080',    # 灰色

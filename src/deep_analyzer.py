@@ -94,7 +94,17 @@ class DeepRunAnalyzer:
             # 调用 LLM 生成简要总结（复用 LLMReportGenerator._call_llm）
             llm_gen = LLMReportGenerator()
             if llm_gen.api_key:
-                result = llm_gen._call_llm(prompt, api_key=llm_gen.api_key, max_tokens=2000, temperature=0.8)
+                result = llm_gen._call_llm(
+                    prompt,
+                    api_key=llm_gen.api_key,
+                    model=llm_gen.config.get('model'),
+                    host=llm_gen.config.get('host'),
+                    port=llm_gen.config.get('port'),
+                    use_http=llm_gen.config.get('use_http', False),
+                    path=llm_gen.config.get('path'),
+                    max_tokens=2000,
+                    temperature=0.8
+                )
                 if result:
                     return result.strip()
             return ""
@@ -492,37 +502,12 @@ class DeepRunAnalyzer:
 
 
 class LLMReportGenerator:
-    """LLM 文字报告生成器（使用本地模型）"""
-    
-    # 百炼标准端点（已注释，待测试本地模型后恢复）
-    # API_KEY_ENV_VARS = [
-    #     'OPENCLAW_ALIYUN_API_KEY',
-    #     'OPENCLAW_BAILIAN_API_KEY',
-    # ]
-    # API_MODEL = 'qwen3.6-plus'
-    # API_HOST = 'dashscope.aliyuncs.com'
-    # API_PATH = '/compatible-mode/v1/chat/completions'
-    
-    # 本地模型配置
-    API_MODEL = 'gemma-4-E4B-it-MLX-4bit'
-    API_HOST = '127.0.0.1'
-    API_PORT = 11333
-    API_PATH = '/v1/chat/completions'
-    API_KEY = 'omlx-ckbwwxh30wydrnra'
+    """LLM 文字报告生成器（配置从 config.py 读取）"""
     
     def __init__(self):
-        self.api_key = self._load_api_key()
-    
-    def _load_api_key(self) -> str:
-        # 本地模型：直接使用硬编码 key
-        if hasattr(self, 'API_KEY') and self.API_KEY:
-            return self.API_KEY
-        # 百炼：从环境变量读取（已注释）
-        # for env_var in self.API_KEY_ENV_VARS:
-        #     key = os.environ.get(env_var, '')
-        #     if key:
-        #         return key
-        return ''
+        from src.config import LLM_CONFIG
+        self.config = LLM_CONFIG
+        self.api_key = self.config.get('api_key', '')
     
     def generate(self, analysis_data: dict) -> str:
         """基于结构化分析数据生成 LLM 文字报告
@@ -669,22 +654,23 @@ class LLMReportGenerator:
         return '\n'.join(lines) + '\n'
     
     def _call_api(self, prompt: str) -> str:
-        """调用 LLM API（默认参数）"""
+        """调用 LLM API（使用 config.py 中的配置）"""
         return self._call_llm(
             prompt,
             api_key=self.api_key,
-            model=self.API_MODEL,
-            host=self.API_HOST,
-            port=getattr(self, 'API_PORT', None),
-            path=self.API_PATH,
-            max_tokens=2000,
-            temperature=0.7
+            model=self.config.get('model'),
+            host=self.config.get('host'),
+            port=self.config.get('port'),
+            use_http=self.config.get('use_http', False),
+            path=self.config.get('path'),
+            max_tokens=self.config.get('max_tokens', 2000),
+            temperature=self.config.get('temperature', 0.7)
         )
     
     @staticmethod
     def _call_llm(prompt: str, api_key: str = None, model: str = 'qwen3.6-plus',
                   host: str = 'dashscope.aliyuncs.com', port: int = None,
-                  path: str = '/compatible-mode/v1/chat/completions',
+                  use_http: bool = False, path: str = '/compatible-mode/v1/chat/completions',
                   max_tokens: int = 2000, temperature: float = 0.7) -> str:
         """通用 LLM 调用方法（供 brief_summary 和 _call_api 复用）"""
         import time
@@ -699,8 +685,8 @@ class LLMReportGenerator:
             'temperature': temperature,
         }).encode('utf-8')
         
-        # 本地模型用 HTTP，云端用 HTTPS
-        conn_factory = http.client.HTTPConnection if host.startswith('127.') or host == 'localhost' else http.client.HTTPSConnection
+        # 根据 use_http 参数选择 HTTP/HTTPS
+        conn_factory = http.client.HTTPConnection if use_http else http.client.HTTPSConnection
         
         for attempt in range(3):
             if port:
