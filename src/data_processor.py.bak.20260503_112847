@@ -287,18 +287,10 @@ class DataProcessor:
             return value * 3.6  # m/s -> km/h
         return value
 
-    @staticmethod
-    def _first_not_none(*values):
-        """返回第一个非 None 的值（兼容 0.0 等数值，不能用 or）"""
-        for v in values:
-            if v is not None:
-                return v
-        return None
-
     def _extract_extra(self, summary: dict, field: str, activity: dict):
         """从 garth 格式中提取额外字段"""
         # 直接从 activity 或 summary 获取
-        value = self._first_not_none(activity.get(field), summary.get(field))
+        value = activity.get(field) or summary.get(field)
         if value is not None:
             return value
 
@@ -306,47 +298,33 @@ class DataProcessor:
         if field == "training_effect":
             return summary.get("trainingEffect")
         elif field == "max_power":
-            return self._first_not_none(summary.get("maxPower"), activity.get("maxPower"))
+            return summary.get("maxPower") or activity.get("maxPower")
         elif field == "normalized_power":
-            return self._first_not_none(
-                activity.get("normalizedPower"), summary.get("normalizedPower"),
-                activity.get("normPower"))
+            return activity.get("normalizedPower") or summary.get("normalizedPower") or activity.get("normPower")
         elif field == "aerobic_training_effect":
-            return self._first_not_none(
-                activity.get("aerobicTrainingEffect"), summary.get("aerobicTrainingEffect"))
+            return activity.get("aerobicTrainingEffect") or summary.get("aerobicTrainingEffect")
         elif field == "anaerobic_training_effect":
-            return self._first_not_none(
-                activity.get("anaerobicTrainingEffect"), summary.get("anaerobicTrainingEffect"))
+            return activity.get("anaerobicTrainingEffect") or summary.get("anaerobicTrainingEffect")
         elif field == "vO2_max":
-            return self._first_not_none(
-                activity.get("vO2Max"), summary.get("vO2Max"), activity.get("vO2MaxValue"))
+            return activity.get("vO2Max") or summary.get("vO2Max") or activity.get("vO2MaxValue")
         elif field == "bmr_calories":
-            return self._first_not_none(
-                activity.get("bmrCalories"), summary.get("bmrCalories"))
+            return activity.get("bmrCalories") or summary.get("bmrCalories")
         elif field == "stride_length":
-            return self._first_not_none(
-                activity.get("strideLength"), activity.get("avgStrideLength"))
+            return activity.get("strideLength") or activity.get("avgStrideLength")
         elif field == "ground_contact_time":
-            return self._first_not_none(
-                summary.get("groundContactTime"), activity.get("avgGroundContactTime"),
-                activity.get("groundContactTime"))
+            return summary.get("groundContactTime") or activity.get("avgGroundContactTime") or activity.get("groundContactTime")
         elif field == "activity_id":
-            return self._first_not_none(
-                activity.get("activity_id"), activity.get("activityId"))
+            return activity.get("activity_id") or activity.get("activityId")
         elif field == "location":
-            return self._first_not_none(
-                activity.get("locationName"),
-                activity.get("activity_name", "").replace(" 跑步", ""))
+            return activity.get("locationName") or activity.get("activity_name", "").replace(" 跑步", "")
         elif field == "elevation_loss_m":
             return summary.get("elevationLoss")
         elif field == "steps":
-            return self._first_not_none(summary.get("steps"), activity.get("steps"))
+            return summary.get("steps") or activity.get("steps")
         elif field == "start_lat":
-            return self._first_not_none(
-                summary.get("startLatitude"), activity.get("start_latitude"))
+            return summary.get("startLatitude") or activity.get("start_latitude")
         elif field == "start_lon":
-            return self._first_not_none(
-                summary.get("startLongitude"), activity.get("start_longitude"))
+            return summary.get("startLongitude") or activity.get("start_longitude")
         elif field == "training_effect_label":
             return activity.get("trainingEffectLabel")
         elif field == "training_load":

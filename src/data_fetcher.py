@@ -13,6 +13,8 @@ from typing import Optional
 
 import garth
 import httpx
+import pandas as pd
+import numpy as np
 
 from src.config import GARMIN_API, DEFAULT_CONFIG
 
@@ -471,3 +473,120 @@ class GarminDataFetcher:
         """重置 garth 客户端状态，释放 HTTP 连接"""
         import garth
         garth.client = garth.Client(domain="garmin.cn")
+
+    # ----------------------------------------------------------
+    # 分圈数据 (Lap Data)
+    # ----------------------------------------------------------
+    def fetch_lap_data(self, activity_id: int) -> list[dict]:
+        """从 Garmin API 获取单条活动的分圈数据
+
+        Args:
+            activity_id: Garmin 活动 ID
+
+        Returns:
+            标准化的分圈列表，异常时返回空列表
+        """
+        self.ensure_authenticated()
+        try:
+            response = garth.connectapi(f"/activity-service/activity/{activity_id}/laps")
+            if not response or not isinstance(response, dict):
+                return []
+
+            lap_dtos = response.get("lapDTOs", [])
+            if not lap_dtos:
+                return []
+
+            laps = []
+            for lap in lap_dtos:
+                distance = lap.get("distance", 0)
+                duration = lap.get("duration", 0)
+                # 配速：秒/公里
+                pace = duration / (distance / 1000.0) if distance > 0 else 0
+                laps.append({
+                    "activity_id": activity_id,
+                    "lap_index": lap.get("lapIndex", 0),
+                    "distance_m": distance,
+                    "duration_sec": duration,
+                    "pace_sec_per_km": round(pace, 2),
+                    "avg_hr": lap.get("averageHR") or np.nan,
+                    "max_hr": lap.get("maxHR") or np.nan,
+                    "avg_power": lap.get("averagePower") or np.nan,
+                    "cadence": lap.get("averageRunCadence") or np.nan,
+                    "elevation_gain_m": lap.get("elevationGain", 0),
+                })
+            logger.info(f"分圈数据: activity {activity_id}, 共 {len(laps)} 圈")
+            return laps
+        except Exception as e:
+            logger.warning(f"获取分圈数据失败 (activity {activity_id}): {e}")
+            return []
+
+    # ----------------------------------------------------------
+    # 分圈数据持久化（Parquet）
+    # ----------------------------------------------------------
+    def _lap_parquet_path(self) -> Path:
+        """返回分圈数据 Parquet 文件路径"""
+        return Path(DEFAULT_CONFIG["data_dir"]).expanduser() / "lap_data.parquet"
+
+    def _save_lap_cache(self, laps: list[dict]) -> None:
+        """将分圈数据追加保存到 Parquet 文件（增量合并）"""
+        if not laps:
+            return
+
+        path = self._lap_parquet_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 加载已有数据
+        existing = pd.DataFrame()
+        if path.exists():
+            try:
+                existing = pd.read_parquet(path)
+            except Exception:
+                existing = pd.DataFrame()
+
+        new_df = pd.DataFrame(laps)
+        if existing.empty:
+            merged = new_df
+        else:
+            # 去重：按 activity_id + lap_index 去重，新数据覆盖旧数据
+            merged = pd.concat([existing, new_df], ignore_index=True)
+            merged = merged.drop_duplicates(subset=["activity_id", "lap_index"], keep="last")
+
+        merged.to_parquet(path, index=False)
+        logger.info(f"分圈数据已保存: {len(merged)} 条记录 -> {path}")
+
+    def _load_lap_cache(self, activity_id: int) -> list[dict]:
+        """从 Parquet 加载指定活动的分圈数据
+
+        Args:
+            activity_id: 活动 ID
+
+        Returns:
+            分圈列表，无数据时返回空列表
+        """
+        path = self._lap_parquet_path()
+        if not path.exists():
+            return []
+        try:
+            df = pd.read_parquet(path)
+            laps = df[df["activity_id"] == activity_id]
+            if laps.empty:
+                return []
+            return laps.to_dict(orient="records")
+        except Exception as e:
+            logger.warning(f"加载分圈缓存失败 (activity {activity_id}): {e}")
+            return []
+
+    def load_all_lap_data(self) -> pd.DataFrame:
+        """加载全部分圈数据
+
+        Returns:
+            全部分圈 DataFrame，无数据时返回空 DataFrame
+        """
+        path = self._lap_parquet_path()
+        if not path.exists():
+            return pd.DataFrame()
+        try:
+            return pd.read_parquet(path)
+        except Exception as e:
+            logger.warning(f"加载全部分圈数据失败: {e}")
+            return pd.DataFrame()

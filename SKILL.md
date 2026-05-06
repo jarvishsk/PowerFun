@@ -5,8 +5,8 @@
 ## 触发词
 
 - `跑步分析`
-- `跑步数据`
-- `跑步报告`
+- `分析今天跑步数据`
+- `分析跑步数据`
 - `跑分`
 - `PowerFun`
 
@@ -30,20 +30,26 @@ pip install -r requirements.txt
 ## 使用
 
 ```bash
-# 基本用法 (拉取最近 30 天)
+# 首次运行（输入账号密码，登录后 token 自动保存到 .data/garmin_tokens/）
 python main.py --email YOUR_EMAIL --password YOUR_PASSWORD
 
-# 指定天数
-python main.py --email YOUR_EMAIL --password YOUR_PASSWORD --days 90
+# 后续运行（自动加载 token，无需密码）
+python main.py --days 30
 
-# 指定最大心率 (用于心率区间计算)
-python main.py --email YOUR_EMAIL --password YOUR_PASSWORD --max-hr 180
+# 指定最大心率
+python main.py --max-hr 180 --resting-hr 60
+
+# 跳过 API 拉取，直接从已处理的 parquet 生成报告
+python main.py --load-parquet
 
 # 仅拉取数据，不生成报告
-python main.py --email YOUR_EMAIL --password YOUR_PASSWORD --dry-run
+python main.py --dry-run
 
 # 输出 JSON 数据
-python main.py --email YOUR_EMAIL --password YOUR_PASSWORD --json-out data.json
+python main.py --json-out data.json
+
+# 删除已保存的 token
+python main.py --logout
 ```
 
 ## 项目结构
@@ -66,9 +72,12 @@ PowerFun/
     └── report_generator.py # Jinja2 HTML 报告生成
 ```
 
-## 状态管理
+## 认证与状态管理
 
-状态文件存储在 `~/.powerfun/last_fetch.json`，记录上次拉取时间和数据量。
+- **Token 存储**：`.data/garmin_tokens/`（首次登录后自动保存）
+- **状态文件**：`.data/last_fetch.json`（记录上次拉取时间和数据量）
+- **缓存**：`.data/activities_cache.json`（活动列表缓存，支持增量拉取）
+- **Token 刷新**：过期自动重新登录（需传入 email/password）
 
 ## 输出
 

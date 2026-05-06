@@ -6,6 +6,9 @@ __pycache__/
 # 数据目录
 .data/
 
+# 全量数据文件（从 API 清洗后保存，不参与同步）
+*.parquet
+
 # 报告输出
 reports/
 *.html

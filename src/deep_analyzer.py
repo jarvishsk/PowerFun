@@ -21,18 +21,21 @@ class DeepRunAnalyzer:
     DEFAULT_MAX_HR = DEFAULT_CONFIG.get('max_hr', 190)
     DEFAULT_RESTING_HR = DEFAULT_CONFIG.get('resting_hr', 60)
 
-    def __init__(self, df_all: pd.DataFrame, target_date=None, max_hr=None, resting_hr=None):
+    def __init__(self, df_all: pd.DataFrame, target_date=None, max_hr=None, resting_hr=None,
+                 lap_data: dict = None):
         """
         Args:
             df_all: 完整 DataFrame（包含所有跑步记录，用于对比分析）
             target_date: 对比基准日期，取该日期之前的历史数据
             max_hr: 最大心率（默认从 DEFAULT_CONFIG 读取）
             resting_hr: 静息心率（默认从 DEFAULT_CONFIG 读取）
+            lap_data: 分圈数据 dict，格式见需求文档（current/history_avg/history_max_pace/history_min_pace/sample_size）
         """
         self.df_all = df_all
         self.target_date = target_date
         self.max_hr = max_hr if max_hr is not None else self.DEFAULT_MAX_HR
         self.resting_hr = resting_hr if resting_hr is not None else self.DEFAULT_RESTING_HR
+        self.lap_data = lap_data or {}
     
     def analyze(self, row: pd.Series) -> dict:
         """对单次跑步进行深度分析
@@ -55,6 +58,8 @@ class DeepRunAnalyzer:
         result['findings'] = self._extract_findings(result)
         result['brief_summary'] = self._generate_brief_summary(row)
         result['hr_zone_ranges'] = self._get_hr_zone_ranges(row)
+        # 分圈分析结果
+        result['laps'] = self.lap_data
         return result
     
     def _generate_brief_summary(self, row: pd.Series) -> str:
@@ -88,7 +93,7 @@ class DeepRunAnalyzer:
             # 调用 LLM 生成简要总结（复用 LLMReportGenerator._call_llm）
             llm_gen = LLMReportGenerator()
             if llm_gen.api_key:
-                result = llm_gen._call_llm(prompt, api_key=llm_gen.api_key, max_tokens=400, temperature=0.8)
+                result = llm_gen._call_llm(prompt, api_key=llm_gen.api_key, max_tokens=2000, temperature=0.8)
                 if result:
                     return result.strip()
             return ""
@@ -149,6 +154,8 @@ class DeepRunAnalyzer:
             'category_name': safe(row.get('category_name'), '跑步'),
             'activity_id': safe(row.get('activity_id'), 'unknown'),
             'bmr_calories': safe(row.get('bmr_calories'), 0),
+            # 分圈数据：圈数
+            'lap_count': len(self.lap_data.get('current', [])) if self.lap_data else 0,
         }
     
     def _build_summary(self, row: pd.Series) -> dict:
@@ -270,10 +277,10 @@ class DeepRunAnalyzer:
             df_same = df_same[df_same['date'] < target_ts]
         df_same = df_same.sort_values('date', ascending=False).head(5)
         
-        if len(df_same) < 2:
+        if len(df_same) < 1:
             return {
                 'sample_size': len(df_same),
-                'message': f'最近同类型跑步仅 {len(df_same)} 条，数据不足对比',
+                'message': f'最近无同类型跑步记录，无法对比',
             }
         
         # 3.1 能力变化
@@ -408,6 +415,79 @@ class DeepRunAnalyzer:
             findings.append("各项指标稳定，保持当前训练节奏")
         
         return findings
+    
+    def _analyze_laps(self, lap_data: list[dict], recent_laps: list[list[dict]]) -> dict:
+        """分析分圈数据，对比历史同类型
+        
+        Args:
+            lap_data: 本次分圈数据列表
+            recent_laps: 前 N 次同类型分圈数据列表，每个元素是一次跑步的分圈列表
+        
+        Returns:
+            分圈分析结果 dict
+        """
+        if not lap_data:
+            return {}
+        
+        # 构建本次每圈数据
+        current = []
+        for lap in sorted(lap_data, key=lambda x: x.get('lap_index', 0)):
+            current.append({
+                'lap': lap.get('lap_index', 0),
+                'pace_sec': lap.get('pace_sec_per_km', 0),
+                'avg_hr': lap.get('avg_hr', 0) if not pd.isna(lap.get('avg_hr', 0)) else None,
+                'avg_power': lap.get('avg_power', 0) if not pd.isna(lap.get('avg_power', 0)) else None,
+                'elevation_gain': lap.get('elevation_gain_m', 0),
+            })
+        
+        if not recent_laps:
+            return {
+                'current': current,
+                'history_avg': [],
+                'history_max_pace': [],
+                'history_min_pace': [],
+                'sample_size': 0,
+            }
+        
+        # 对每个圈序号，计算历史均值/最高/最低配速
+        max_laps = len(current)
+        history_avg = []
+        history_max_pace = []
+        history_min_pace = []
+        
+        for lap_idx in range(1, max_laps + 1):
+            paces = []
+            hrs = []
+            for run_laps in recent_laps:
+                for rl in run_laps:
+                    if rl.get('lap_index') == lap_idx:
+                        p = rl.get('pace_sec_per_km', 0)
+                        if p > 0:
+                            paces.append(p)
+                        h = rl.get('avg_hr')
+                        if h is not None and not pd.isna(h) and h > 0:
+                            hrs.append(h)
+            
+            avg_pace = sum(paces) / len(paces) if paces else 0
+            avg_hr = sum(hrs) / len(hrs) if hrs else None
+            
+            history_avg.append({
+                'lap': lap_idx,
+                'pace_sec': round(avg_pace, 2) if avg_pace else 0,
+                'avg_hr': round(avg_hr, 0) if avg_hr else None,
+            })
+            
+            # 最高配速 = 最慢（秒数最大），最低配速 = 最快（秒数最小）
+            history_max_pace.append(round(max(paces), 2) if paces else 0)
+            history_min_pace.append(round(min(paces), 2) if paces else 0)
+        
+        return {
+            'current': current,
+            'history_avg': history_avg,
+            'history_max_pace': history_max_pace,
+            'history_min_pace': history_min_pace,
+            'sample_size': len(recent_laps),
+        }
 
 
 class LLMReportGenerator:
@@ -459,6 +539,10 @@ class LLMReportGenerator:
         efficiency = data.get('efficiency', {})
         comparison = data.get('comparison', {})
         findings = data.get('findings', [])
+        laps = data.get('laps', {})
+        
+        # 构建分圈数据段落
+        lap_section = self._format_lap_data(laps)
         
         return f"""你是一位专业的跑步教练和运动科学家。请基于以下数据，生成一份通俗易懂的跑步分析报告。
 
@@ -486,7 +570,7 @@ class LLMReportGenerator:
 
 ## 历史对比
 {self._format_comparison(comparison)}
-
+{lap_section}
 ## 关键发现
 {chr(10).join(f'- {f}' for f in findings)}
 
@@ -496,13 +580,14 @@ class LLMReportGenerator:
 2. 强度和负荷解读（心率、功率、训练效果的综合评价）
 3. 技术效率解读（步频、步幅、垂直振幅、触地时间的综合分析）
 4. 能力变化趋势（基于历史对比的解读）
-5. 具体的改进建议（3-5 条，可操作的训练建议）
+5. 分圈表现解读（配速是否均匀、有无心率漂移、每圈与历史对比）
+6. 具体的改进建议（3-5 条，可操作的训练建议）
 
 要求：
 - 语言风格：像一位经验丰富的教练在和你聊天
 - 避免堆砌数字，重点解读趋势和意义
 - 建议要具体可执行，不要空话
-- 总字数控制在 800 字以内
+- 总字数控制在 1200 字以内
 """
     
     def _format_comparison(self, comp: dict) -> str:
@@ -538,6 +623,37 @@ class LLMReportGenerator:
         mins = int(pace_seconds // 60)
         secs = int(pace_seconds % 60)
         return f"{mins}分{secs:02d}秒/KM"
+    
+    def _format_lap_data(self, laps: dict) -> str:
+        """格式化分圈数据为 LLM Prompt 文本段落"""
+        if not laps or not laps.get('current'):
+            return ''
+        
+        lines = ['## 分圈数据分析']
+        current = laps.get('current', [])
+        history_avg = laps.get('history_avg', [])
+        sample_size = laps.get('sample_size', 0)
+        
+        if sample_size > 0:
+            lines.append(f'（对比前 {sample_size} 次同类型跑步）')
+        
+        lines.append('| 圈次 | 配速 | 心率 | 功率 | 历史均配速 |')
+        lines.append('|------|------|------|------|------------|')
+        
+        for i, lap in enumerate(current):
+            lap_num = lap.get('lap', i + 1)
+            pace = self._format_pace(lap.get('pace_sec', 0))
+            hr = f"{lap.get('avg_hr', 0):.0f}" if lap.get('avg_hr') else '--'
+            power = f"{lap.get('avg_power', 0):.0f}W" if lap.get('avg_power') else '--'
+            hist = history_avg[i] if i < len(history_avg) else {}
+            hist_pace = self._format_pace(hist.get('pace_sec', 0)) if hist.get('pace_sec', 0) > 0 else '--'
+            lines.append(f'| {lap_num}KM | {pace} | {hr} | {power} | {hist_pace} |')
+        
+        # 提示 LLM 解读分圈表现
+        lines.append('')
+        lines.append('请解读分圈表现：配速是否均匀？心率是否漂移（后半程明显升高）？哪几圈相对历史表现更好/更差？')
+        
+        return '\n'.join(lines) + '\n'
     
     def _call_api(self, prompt: str) -> str:
         """调用 Bailian API（默认参数）"""

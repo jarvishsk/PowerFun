@@ -13,6 +13,15 @@ from src.config import ZONE_COLORS as _ZONE_COLORS
 
 logger = logging.getLogger("PowerFun.analysis_report")
 
+
+def _load_version() -> str:
+    """从 VERSION 文件读取版本号"""
+    try:
+        version_path = Path(__file__).resolve().parent.parent / 'VERSION'
+        return version_path.read_text().strip()
+    except Exception:
+        return '3.0'
+
 # 创建共享 Environment
 _env = Environment(loader=BaseLoader())
 
@@ -36,19 +45,55 @@ def markdown_to_html(md_text: str) -> str:
     md_text = re.sub(r'<script[^>]*>.*?</script>', '', md_text, flags=re.DOTALL | re.IGNORECASE)
     md_text = re.sub(r'<iframe[^>]*>', '', md_text, flags=re.IGNORECASE)
     md_text = re.sub(r'\bon\w+\s*=', '', md_text, flags=re.IGNORECASE)
+    # 先处理标题和加粗
+    md_text = re.sub(r'^#{2,3}\s+(.+)$', r'<h3>\1</h3>', md_text, flags=re.MULTILINE)
+    md_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', md_text)
+    # 按行分割处理
     lines = md_text.split('\n')
     result = []
+    prev_was_h3 = False
+    consecutive_blanks = 0
     for line in lines:
-        line = re.sub(r'^#{2,3}\s+(.+)$', r'<h3>\1</h3>', line)
-        line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
-        result.append(line)
-    return '<br>'.join(result)
+        stripped = line.strip()
+        if stripped == '':
+            # 跳过 h3 后面的空行（标题和内容之间不留空行）
+            if prev_was_h3:
+                continue
+            consecutive_blanks += 1
+            # 连续空行只保留 1 个（分隔不同项），多余的忽略
+            if consecutive_blanks == 1:
+                result.append('')
+        else:
+            result.append(stripped)
+            consecutive_blanks = 0
+        prev_was_h3 = stripped.startswith('<h3>')
+    # 用 <br> 连接，但 h3 标题后不插 <br>（标题和内容紧贴）
+    final = []
+    for i, part in enumerate(result):
+        if part == '':
+            final.append('<br>')
+        elif i > 0 and result[i-1].startswith('<h3>'):
+            final.append(part)  # h3 后直接拼接，不插入 <br>
+        elif i > 0:
+            final.append('<br>')
+            final.append(part)
+        else:
+            final.append(part)
+    return ''.join(final)
+    return ''.join(final)
 
 def truncate_text(text, max_len):
     return text[:max_len] if text else ''
 
 def format_pace(secs):
     return f"{int(secs//60)}分{int(secs%60):02d}秒/KM" if secs else "--"
+
+def fmt2(val):
+    """格式化数字为保留两位小数，0 也显示（如 0.40）"""
+    try:
+        return f"{float(val):.2f}"
+    except (ValueError, TypeError):
+        return str(val)
 
 def bracket_color(diff, good_is_low):
     return '#dc3545' if (diff < 0) == good_is_low else '#28a745'
@@ -62,6 +107,7 @@ _env.filters['signed'] = signed
 _env.filters['markdown_to_html'] = markdown_to_html
 _env.filters['truncate_text'] = truncate_text
 _env.filters['format_pace'] = format_pace
+_env.filters['fmt2'] = fmt2
 _env.filters['bracket_color'] = bracket_color
 _env.globals['bracket_color'] = bracket_color
 _env.globals['bracket_text_color'] = bracket_text_color
@@ -106,11 +152,12 @@ ANALYSIS_HTML_TEMPLATE = """
         .footer { text-align: center; padding: 16px; font-size: 12px; color: #999; }
         @media print { body { background: white; } .section { box-shadow: none; border: 1px solid #eee; } }
     </style>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h1>🏃 跑步深度分析报告</h1>
+        <h1>🏃 深度分析报告</h1>
         <div class="meta">{{ date }} | {{ category_name }} | {{ distance_km }}km | {{ duration_min }}分钟</div>
     </div>
 
@@ -154,7 +201,7 @@ ANALYSIS_HTML_TEMPLATE = """
             <div class="stat-card"><div class="value">{{ aerobic_te }}</div><div class="label">有氧 TE</div></div>
             <div class="stat-card"><div class="value">{{ anaerobic_te }}</div><div class="label">无氧 TE</div></div>
         </div>
-        <p>卡路里消耗：{{ calories }} kcal（运动）+ {{ bmr_calories }} kcal（基础代谢）</p>
+        <p>本次卡路里总消耗：{{ total_calories }}kcal = {{ calories }} kcal（运动）+ {{ bmr_calories }} kcal（基础代谢）</p>
     </div>
 
     <div class="section">
@@ -165,23 +212,61 @@ ANALYSIS_HTML_TEMPLATE = """
             <div class="stat-card"><div class="value">{{ vertical_ratio }}%</div><div class="label">垂直振幅比</div></div>
             <div class="stat-card"><div class="value">{{ ground_contact }}</div><div class="label">触地时间 (ms)</div></div>
         </div>
-        <!-- 横排评价 -->
-        <div style="display:flex;gap:16px;margin:12px 0;flex-wrap:wrap;">
+        <!-- 横排评价（居中） -->
+        <div style="display:flex;gap:16px;margin:12px 0;flex-wrap:wrap;justify-content:center;">
             <span>步频：<span class="eval-badge eval-{{ cadence_eval_class }}">{{ cadence_eval }}</span></span>
             <span>垂直振幅比：<span class="eval-badge eval-{{ vr_eval_class }}">{{ vr_eval }}</span></span>
             <span>触地时间：<span class="eval-badge eval-{{ gct_eval_class }}">{{ gct_eval }}</span></span>
         </div>
-        <!-- 参考标准 -->
+        <!-- 参考标准（断行） -->
         <p style="color:#999;font-size:12px;margin-top:8px;">
-        参考标准：步频 优秀≥180 良好170-179 一般160-169 偏低<160（spm）|
-        垂直振幅比 优秀≤6.3% 良好6.4-8.0% 一般8.1-10.0% 偏高>10.0% |
-        触地时间 优秀≤210 良好211-240 一般241-270 偏长>270（ms）
+        <strong>参考标准</strong><br>
+        <strong>步频</strong>：优秀≥180 良好170-179 一般160-169 偏低<160（spm）<br>
+        <strong>垂直振幅比</strong>：优秀≤6.3% 良好6.4-8.0% 一般8.1-10.0% 偏高>10.0%<br>
+        <strong>触地时间</strong>：优秀≤210 良好211-240 一般241-270 偏长>270（ms）
         </p>
     </div>
 
-    {% if comparison and comparison.get('sample_size', 0) >= 2 %}
+    {% if lap_pace_chart_html or lap_hr_chart_html %}
     <div class="section">
-        <h2>📈 对比分析（最近5次同类型）</h2>
+        <h2>📊 每公里配速</h2>
+        <div id="lap-pace-chart" style="border-radius:8px;overflow:hidden;"></div>
+
+    </div>
+    {% if lap_pace_chart_html %}
+    <script>
+    (function(){
+        try {
+            var data = {{ lap_pace_chart_html | safe }};
+            if (data && data.data && data.data.length > 0) {
+                Plotly.newPlot('lap-pace-chart', data.data, data.layout, {responsive: true});
+            }
+        } catch(e) { console.error('lap pace chart render error:', e); }
+    })();
+    </script>
+    {% endif %}
+
+    {% if lap_hr_chart_html %}
+    <div class="section">
+        <h2>📊 每公里心率</h2>
+        <div id="lap-hr-chart" style="border-radius:8px;overflow:hidden;"></div>
+    </div>
+    <script>
+    (function(){
+        try {
+            var data = {{ lap_hr_chart_html | safe }};
+            if (data && data.data && data.data.length > 0) {
+                Plotly.newPlot('lap-hr-chart', data.data, data.layout, {responsive: true});
+            }
+        } catch(e) { console.error('lap hr chart render error:', e); }
+    })();
+    </script>
+    {% endif %}
+    {% endif %}
+
+    {% if comparison and comparison.get('sample_size', 0) >= 1 %}
+    <div class="section">
+        <h2>📈 对比分析（近5次同类型均值）</h2>
         
         {% if comparison.get('ability') %}
         <h3>能力变化</h3>
@@ -252,13 +337,13 @@ ANALYSIS_HTML_TEMPLATE = """
         {% if comparison.economy.get('hr_pace_ratio') %}
         <div class="comparison-row">
             <div class="metric-label">📊 心率/配速比</div>
-            <div class="metric-values">{{ comparison.economy.hr_pace_ratio.current }} <span class="vs-badge">VS</span> {{ comparison.economy.hr_pace_ratio.history_avg }}</div>
+            <div class="metric-values">{{ comparison.economy.hr_pace_ratio.current|fmt2 }} <span class="vs-badge">VS</span> {{ comparison.economy.hr_pace_ratio.history_avg|fmt2 }}</div>
             <div class="metric-trend"><span class="trend-badge" style="background:{{ '#e3f2fd' if comparison.economy.hr_pace_ratio.verdict == '持平' else ('#d4edda' if (comparison.economy.hr_pace_ratio.diff < 0) == True else '#f8d7da') }};color:{{ '#17a2b8' if comparison.economy.hr_pace_ratio.verdict == '持平' else ('#155724' if (comparison.economy.hr_pace_ratio.diff < 0) == True else '#721c24') }};">{{ comparison.economy.hr_pace_ratio.verdict }}</span></div>
         </div>
         {% endif %}
         {% endif %}
         
-        <p style="text-align:right;color:#999;font-size:12px;margin-top:16px;">样本数量：{{ comparison.sample_size }} 次</p>
+        <p style="text-align:right;color:#999;font-size:12px;margin-top:16px;">有效样本{{ comparison.sample_size }}个</p>
     </div>
     {% endif %}
 
@@ -279,7 +364,7 @@ ANALYSIS_HTML_TEMPLATE = """
     {% endif %}
 
     <div class="footer">
-        PowerFun v2.2 | 数据来自 Garmin Connect | 生成时间：{{ generated_at }}
+        PowerFun v{{ version }} | 数据来自 Garmin Connect | 生成时间：{{ generated_at }}
     </div>
 </div>
 </body>
@@ -301,12 +386,17 @@ class AnalysisReportGenerator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
-    def generate(self, analysis_data: dict, llm_report: str) -> str:
+    def generate(self, analysis_data: dict, llm_report: str,
+                 lap_pace_chart_html: str = '', lap_hr_chart_html: str = '',
+                 lap_count: int = 0) -> str:
         """生成 HTML 报告
         
         Args:
             analysis_data: DeepRunAnalyzer.analyze() 返回的结果
             llm_report: LLM 生成的文字报告
+            lap_pace_chart_html: 分圈配速图表 HTML（可选）
+            lap_hr_chart_html: 分圈心率图表 HTML（可选）
+            lap_count: 分圈数量（可选）
             
         Returns:
             HTML 文件路径
@@ -338,6 +428,7 @@ class AnalysisReportGenerator:
             'anaerobic_te': f"{raw.get('anaerobic_te', 0):.1f}",
             'calories': f"{raw.get('calories', 0):.0f}",
             'bmr_calories': f"{raw.get('bmr_calories', 0):.0f}",
+            'total_calories': f"{raw.get('calories', 0) + raw.get('bmr_calories', 0):.0f}",
             'hr_zone_pct': intensity.get('hr_zone_pct', {}),
             'hr_zone_ranges': analysis_data.get('hr_zone_ranges', {}),
             'cadence_eval': efficiency.get('cadence_eval', ''),
@@ -350,7 +441,11 @@ class AnalysisReportGenerator:
             'findings': findings,
             'brief_summary': analysis_data.get('brief_summary', ''),
             'llm_report': llm_report if llm_report and '未配置' not in llm_report and '失败' not in llm_report else '',
+            'lap_pace_chart_html': lap_pace_chart_html,
+            'lap_hr_chart_html': lap_hr_chart_html,
+            'lap_count': lap_count,
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'version': _load_version(),
         }
         
         # 使用共享 Environment 编译模板

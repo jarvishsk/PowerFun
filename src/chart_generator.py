@@ -145,7 +145,7 @@ class ChartGenerator:
                         mode='lines+markers',
                         name=f"{cat_name}",
                         line=dict(color=color, width=2),
-                        line_shape='linear',
+                        line_shape='spline',
                         marker=dict(size=8, color=color),
                         visible=is_visible,
                         hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>配速: %{customdata[2]}<extra></extra>",
@@ -159,7 +159,7 @@ class ChartGenerator:
                         mode='lines+markers',
                         name=f"{cat_name} - 心率",
                         line=dict(color=color, width=2, dash='dash'),
-                        line_shape='linear',
+                        line_shape='spline',
                         marker=dict(size=6, color=color, symbol='diamond'),
                         visible=is_visible,
                         hovertemplate="<b>%{customdata}</b><br>日期: %{x}<br>心率: %{y} bpm<extra></extra>",
@@ -585,12 +585,12 @@ class ChartGenerator:
 
     def create_training_effect_chart(self, df: pd.DataFrame) -> Dict:
         """
-        创建训练效果面积趋势图
+        创建训练效果面积趋势图 + vO2max 趋势线
         - 上线：有氧 + 无氧 总和（平滑折线）
         - 下线：仅有氧效果（平滑折线）
         - 两线之间红色填充（宽度 = 无氧训练占比）
-        - Y轴 3-6，保留三条参考线
-        - 仅在有氧/无氧效果数据可用时显示
+        - 左轴：训练效果评分 3-6，保留三条参考线
+        - 右轴：vO2max 趋势线（橙色虚线）
         """
         if df.empty:
             return {}
@@ -614,22 +614,19 @@ class ChartGenerator:
 
         fig = go.Figure()
 
-        # 5次移动平均（平滑处理）
-        if len(df) >= 3:
-            total_smooth = df['total_te'].rolling(window=5, center=True, min_periods=1).mean()
-            aerobic_smooth = df['aerobic_training_effect'].rolling(window=5, center=True, min_periods=1).mean()
-        else:
-            total_smooth = df['total_te']
-            aerobic_smooth = df['aerobic_training_effect']
+        # 计算有氧 + 无氧总和
+        # 使用原始数据（不 smoothing）
+        total_values = df['total_te'].tolist()
+        aerobic_values = df['aerobic_training_effect'].tolist()
 
         # 上线：有氧 + 无氧（填充到下线）
         fig.add_trace(go.Scatter(
             x=df['date'].tolist(),
-            y=total_smooth.tolist(),
+            y=total_values,
             mode='lines',
             name='有氧+无氧',
             fill=None,
-            line=dict(color='#FF6B6B', width=2, shape='spline', smoothing=1.3),
+            line=dict(color='#FF6B6B', width=2, shape='spline'),
             hovertemplate="<b>%{customdata}</b><br>日期: %{x|%Y-%m-%d}<br>有氧+无氧: %{y:.1f}<extra></extra>",
             customdata=df['title'].values
         ))
@@ -637,15 +634,34 @@ class ChartGenerator:
         # 下线：有氧效果（填充到上线，形成区域）
         fig.add_trace(go.Scatter(
             x=df['date'].tolist(),
-            y=aerobic_smooth.tolist(),
+            y=aerobic_values,
             mode='lines',
             name='有氧效果',
             fill='tonexty',
             fillcolor='rgba(255, 107, 107, 0.25)',
-            line=dict(color='#4169E1', width=2, shape='spline', smoothing=1.3),
+            line=dict(color='#4169E1', width=2, shape='spline'),
             hovertemplate="<b>%{customdata}</b><br>日期: %{x|%Y-%m-%d}<br>有氧效果: %{y:.1f}<extra></extra>",
             customdata=df['title'].values
         ))
+
+        # vO2max 趋势线（右轴）
+        has_vo2 = 'vO2_max' in df.columns and df['vO2_max'].notna().any()
+        if has_vo2:
+            vo2_values = df['vO2_max'].fillna(0).tolist()
+            if len(df) >= 3:
+                vo2_smooth = df['vO2_max'].rolling(window=5, center=True, min_periods=1).mean().tolist()
+            else:
+                vo2_smooth = vo2_values
+            fig.add_trace(go.Scatter(
+                x=df['date'].tolist(),
+                y=vo2_smooth,
+                mode='lines',
+                name='VO2max',
+                yaxis='y2',
+                line=dict(color='#2ECC71', width=2, dash='dash', shape='spline'),
+                hovertemplate="<b>%{customdata}</b><br>日期: %{x|%Y-%m-%d}<br>VO2max: %{y:.0f}<extra></extra>",
+                customdata=df['title'].values
+            ))
 
         # 添加参考线（Garmin 官方 TE 标准）
         fig.add_hline(y=3.0, line_dash="dot", line_color="#cccccc",
@@ -655,13 +671,29 @@ class ChartGenerator:
         fig.add_hline(y=5.0, line_dash="dot", line_color="#FF6B6B",
                       annotation_text="过度训练")
 
+        # 配置双 Y 轴
+        if has_vo2:
+            vo2_min = float(df['vO2_max'].min())
+            vo2_max = float(df['vO2_max'].max())
+            y2_range = [int(vo2_min - 1), int(vo2_max + 1)]
+            fig.update_layout(
+                yaxis2=dict(
+                    title=dict(text='VO2max', font=dict(color='#2ECC71')),
+                    side='right',
+                    overlaying='y',
+                    range=y2_range,
+                    showgrid=False,
+                    tickfont=dict(color='#2ECC71'),
+                )
+            )
+
         fig.update_layout(
             title=None,
             xaxis=dict(tickangle=-45, title=None, type='date', tickformat='%Y-%m'),
-            yaxis=dict(title='训练效果评分', range=[3, 6]),
+            yaxis=dict(title='训练效果评分', range=[3, 8.5]),
             template='plotly_white',
             height=400,
-            margin=dict(l=60, r=40, t=40, b=80),
+            margin=dict(l=60, r=60, t=40, b=80),
             hovermode='x unified',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
         )
@@ -845,3 +877,282 @@ class ChartGenerator:
             charts['hr_distribution'] = {}
 
         return charts
+    
+    def _compute_total_km(self, lap_data: list[dict]) -> int:
+        """根据分圈数据计算总距离，向下取整为整数KM"""
+        total_m = sum(lap.get('distance_m', 0) for lap in lap_data)
+        return int(total_m // 1000)
+
+    def generate_lap_pace_chart_v2(self, lap_data: list[dict], recent_laps: list[list[dict]],
+                                    cat_name: str = '') -> str:
+        """生成分圈配速对比图表（独立配速图）
+        
+        Args:
+            lap_data: 本次分圈数据列表
+            recent_laps: 前 N 次同类型分圈数据列表
+            cat_name: 跑步类型名称
+        
+        Returns:
+            Plotly 图表的 JSON 字符串
+        """
+        try:
+            if not lap_data:
+                return json.dumps({})
+            
+            current = sorted(lap_data, key=lambda x: x.get('lap_index', 0))
+            
+            # 需求 2：距离取整，只显示到 total_km
+            total_km = self._compute_total_km(lap_data)
+            if total_km <= 0:
+                return json.dumps({})
+            
+            # 只取 1~total_km 的分圈数据
+            current = [lap for lap in current if 1 <= lap.get('lap_index', 0) <= total_km]
+            if not current:
+                return json.dumps({})
+            
+            x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
+            pace_values = [lap.get('pace_sec_per_km', 0) for lap in current]
+            pace_fmt = [self._format_pace(p) for p in pace_values]
+            
+            fig = go.Figure()
+            
+            # 本次配速曲线
+            fig.add_trace(go.Scatter(
+                x=x_km,
+                y=pace_values,
+                mode='lines+markers',
+                name='本次配速',
+                line=dict(color='#4169E1', width=3, shape='spline'),
+                marker=dict(size=8, color='#4169E1'),
+                hovertemplate='公里 %{x}<br>配速: %{customdata}/KM<extra></extra>',
+                customdata=pace_fmt,
+            ))
+            
+            # 需求 3：历史数据处理——同一 KM 序号，只使用有数据的记录计算
+            if recent_laps:
+                hist_avg_pace, hist_max_pace, hist_min_pace = [], [], []
+                
+                for lap_idx in range(1, total_km + 1):
+                    paces = []
+                    for run_laps in recent_laps:
+                        for rl in run_laps:
+                            if rl.get('lap_index') == lap_idx:
+                                p = rl.get('pace_sec_per_km', 0)
+                                if p > 0:
+                                    paces.append(p)
+                    
+                    if paces:
+                        hist_avg_pace.append(sum(paces) / len(paces))
+                        hist_max_pace.append(max(paces))
+                        hist_min_pace.append(min(paces))
+                    else:
+                        hist_avg_pace.append(None)
+                        hist_max_pace.append(None)
+                        hist_min_pace.append(None)
+                
+                hist_x = list(range(1, total_km + 1))
+                
+                # 历史平均配速（灰色虚线）
+                fig.add_trace(go.Scatter(
+                    x=hist_x,
+                    y=hist_avg_pace,
+                    mode='lines',
+                    name='历史均配速',
+                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                    hovertemplate='公里 %{x}<br>历史均配速: %{customdata}/KM<extra></extra>',
+                    customdata=[self._format_pace(v) if v is not None else '--' for v in hist_avg_pace],
+                ))
+                
+                # 填充区域：历史最高 vs 最低配速区间
+                fig.add_trace(go.Scatter(
+                    x=hist_x + hist_x[::-1],
+                    y=[v if v is not None else 0 for v in hist_max_pace] +
+                      [v if v is not None else 0 for v in hist_min_pace[::-1]],
+                    fill='toself',
+                    fillcolor='rgba(65, 105, 225, 0.15)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='历史配速区间',
+                    hoverinfo='skip',
+                    showlegend=True,
+                ))
+            
+            # 需求 1：Y 轴使用自定义 ticktext 显示 X:XX/KM 格式
+            valid_paces = [p for p in pace_values if p > 0]
+            max_pace = max(valid_paces) if valid_paces else 420
+            min_pace = min(valid_paces) if valid_paces else 300
+            y_padding = (max_pace - min_pace) * 0.15 if max_pace > min_pace else 15
+            
+            # 生成 Y 轴刻度（以 15 秒为间隔），确保范围覆盖所有刻度
+            tick_start = int((min_pace - y_padding) // 15) * 15
+            tick_end = int((max_pace + y_padding) // 15 + 1) * 15
+            tick_vals = list(range(tick_start, tick_end + 1, 15))
+            tick_texts = [self._format_pace(v) for v in tick_vals]
+            
+            fig.update_layout(
+                title=None,
+                xaxis=dict(
+                    title='公里',
+                    range=[0.5, total_km + 0.5],  # 横轴从1开始，避免从0开始显示多余刻度
+                    tickmode='linear',
+                    tick0=1,
+                    dtick=1,
+                    ticktext=[f'{k}KM' for k in range(1, total_km + 1)],
+                    tickvals=list(range(1, total_km + 1)),
+                ),
+                yaxis=dict(
+                    title='配速',
+                    autorange='reversed',  # 配速越小越快，反转 Y 轴
+                    tickmode='array',
+                    tickvals=tick_vals,
+                    ticktext=tick_texts,
+                    range=[max_pace + y_padding, max(min_pace - y_padding, 0)],
+                ),
+                template='plotly_white',
+                height=450,
+                margin=dict(l=60, r=60, t=40, b=60),
+                hovermode='x unified',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+            )
+            
+            fig_dict = self._to_js_dict(fig.to_dict())
+            return json.dumps(fig_dict, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"分圈配速图表生成失败: {e}")
+            return json.dumps({})
+
+    def generate_lap_hr_chart(self, lap_data: list[dict], recent_laps: list[list[dict]],
+                               cat_name: str = '') -> str:
+        """生成分圈心率对比图表（独立心率图）
+        
+        Args:
+            lap_data: 本次分圈数据列表
+            recent_laps: 前 N 次同类型分圈数据列表
+            cat_name: 跑步类型名称
+        
+        Returns:
+            Plotly 图表的 JSON 字符串
+        """
+        try:
+            if not lap_data:
+                return json.dumps({})
+            
+            current = sorted(lap_data, key=lambda x: x.get('lap_index', 0))
+            
+            # 距离取整，与配速图保持一致
+            total_km = self._compute_total_km(lap_data)
+            if total_km <= 0:
+                return json.dumps({})
+            
+            # 只取 1~total_km 的分圈数据
+            current = [lap for lap in current if 1 <= lap.get('lap_index', 0) <= total_km]
+            if not current:
+                return json.dumps({})
+            
+            x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
+            hr_values = [lap.get('avg_hr') for lap in current]
+            
+            fig = go.Figure()
+            
+            # 本次心率曲线
+            fig.add_trace(go.Scatter(
+                x=x_km,
+                y=hr_values,
+                mode='lines+markers',
+                name='本次心率',
+                line=dict(color='#FF6B6B', width=3, shape='spline'),
+                marker=dict(size=8, color='#FF6B6B'),
+                hovertemplate='公里 %{x}<br>心率: %{y:.0f} bpm<extra></extra>',
+            ))
+            
+            # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
+            if recent_laps:
+                hist_avg_hr, hist_max_hr, hist_min_hr = [], [], []
+                
+                for lap_idx in range(1, total_km + 1):
+                    hrs = []
+                    for run_laps in recent_laps:
+                        for rl in run_laps:
+                            if rl.get('lap_index') == lap_idx:
+                                h = rl.get('avg_hr')
+                                if h is not None and h > 0:
+                                    hrs.append(h)
+                    
+                    if hrs:
+                        hist_avg_hr.append(sum(hrs) / len(hrs))
+                        hist_max_hr.append(max(hrs))
+                        hist_min_hr.append(min(hrs))
+                    else:
+                        hist_avg_hr.append(None)
+                        hist_max_hr.append(None)
+                        hist_min_hr.append(None)
+                
+                hist_x = list(range(1, total_km + 1))
+                
+                # 历史平均心率（灰色虚线）
+                fig.add_trace(go.Scatter(
+                    x=hist_x,
+                    y=hist_avg_hr,
+                    mode='lines',
+                    name='历史均心率',
+                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                    hovertemplate='公里 %{x}<br>历史均心率: %{y:.0f} bpm<extra></extra>',
+                ))
+                
+                # 填充区域：历史最高 vs 最低心率区间
+                fig.add_trace(go.Scatter(
+                    x=hist_x + hist_x[::-1],
+                    y=[v if v is not None else 0 for v in hist_max_hr] +
+                      [v if v is not None else 0 for v in hist_min_hr[::-1]],
+                    fill='toself',
+                    fillcolor='rgba(255, 107, 107, 0.15)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='历史心率区间',
+                    hoverinfo='skip',
+                    showlegend=True,
+                ))
+            
+            # Y 轴范围：取实际数据的 ±5%
+            all_hr_values = [h for h in hr_values if h is not None and h > 0]
+            if recent_laps:
+                for run_laps in recent_laps:
+                    for rl in run_laps:
+                        h = rl.get('avg_hr')
+                        if h is not None and h > 0:
+                            all_hr_values.append(h)
+            
+            if all_hr_values:
+                hr_min = min(all_hr_values)
+                hr_max = max(all_hr_values)
+                hr_padding = (hr_max - hr_min) * 0.05
+                hr_range = [max(hr_min - hr_padding, 60), hr_max + hr_padding]
+            else:
+                hr_range = [100, 200]
+            
+            fig.update_layout(
+                title=None,
+                xaxis=dict(
+                    title='公里',
+                    range=[0.5, total_km + 0.5],  # 横轴从1开始
+                    tickmode='linear',
+                    tick0=1,
+                    dtick=1,
+                    ticktext=[f'{k}KM' for k in range(1, total_km + 1)],
+                    tickvals=list(range(1, total_km + 1)),
+                ),
+                yaxis=dict(
+                    title='心率 (bpm)',
+                    range=hr_range,
+                ),
+                template='plotly_white',
+                height=450,
+                margin=dict(l=60, r=60, t=40, b=60),
+                hovermode='x unified',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+            )
+            
+            fig_dict = self._to_js_dict(fig.to_dict())
+            return json.dumps(fig_dict, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"分圈心率图表生成失败: {e}")
+            return json.dumps({})

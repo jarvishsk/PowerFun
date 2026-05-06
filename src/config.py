@@ -132,15 +132,17 @@ DEFAULT_CONFIG = {
     'hr_zone_method': 'max_hr',   # 心率区间计算方法: max_hr | hrr (心率储备)
     'icloud_deep_analysis_dir': str(Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'RUN'),
     # 心率参数
-    'max_hr': 190,             # 默认最大心率
+    'max_hr': 188,             # 默认最大心率（老板实测）
     'resting_hr': 60,          # 默认静息心率
     # 过滤阈值
     'max_distance_km': 50,     # 单次跑步最大距离过滤阈值
     # 深析参数
     'deep_analysis_max_runs': 5,  # 对比分析取最近 N 次同类型
     # PDF 尺寸
-    'pdf_height': '1400mm',    # PDF 页面高度默认值
-    'pdf_width': '370mm',      # PDF 页面宽度默认值
+    'pdf_height': '1600mm',    # PDF 页面高度默认值（主报告）
+    'pdf_width': '370mm',      # PDF 页面宽度默认值（主报告）
+    'deep_pdf_height': '1400mm',    # 深析报告 PDF 高度
+    'deep_pdf_width': '230mm',     # 深析报告 PDF 宽度
 }
 
 # Garmin API 端点 (China 区域)

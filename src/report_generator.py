@@ -8,10 +8,20 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 import logging
+
+
+def _load_version() -> str:
+    """从 VERSION 文件读取版本号"""
+    try:
+        version_path = Path(__file__).resolve().parent.parent / 'VERSION'
+        return version_path.read_text().strip()
+    except Exception:
+        return '3.0'
 
 
 def _safe_color(color) -> str:
@@ -126,7 +136,7 @@ class ReportGenerator:
         available_links = set()
         if analysis_dir and os.path.isdir(analysis_dir):
             for fname in os.listdir(analysis_dir):
-                if fname.startswith('run_analysis_') and fname.endswith('.html'):
+                if (fname.startswith('run_analysis_') or fname.startswith('深度分析报告_')) and fname.endswith('.html'):
                     available_links.add(fname)
 
         records = []
@@ -141,6 +151,7 @@ class ReportGenerator:
                 'hr': f"{int(row['avg_hr'])}" if pd.notna(row.get('avg_hr')) else '--',
                 'power': f"{int(row['avg_power'])}" if pd.notna(row.get('avg_power')) else '--',
                 'cadence': f"{int(row['cadence'])}" if pd.notna(row.get('cadence')) else '--',
+                'vo2_max': f"{int(row['vO2_max'])}" if pd.notna(row.get('vO2_max')) else '--',
                 'activity_id': row.get('activity_id', 'unknown'),
             }
             # 检查是否有对应的深析报告
@@ -199,7 +210,7 @@ class ReportGenerator:
             html_content = self._render_fallback(
                 df, charts_json, stats, insights, table_data, charts,
                 current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                has_training_effect, has_power
+                has_training_effect, has_power, _load_version()
             )
 
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -227,11 +238,12 @@ class ReportGenerator:
             pace_m=pace_m, pace_s=pace_s,
             has_training_effect=has_training_effect,
             has_power=has_power,
+            version=_load_version(),
         )
 
     def _render_fallback(self, df, charts_json, stats, insights, table_data, charts,
                          current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                         has_training_effect, has_power) -> str:
+                         has_training_effect, has_power, version='3.0') -> str:
         """不使用Jinja2的渲染（直接字符串替换）"""
         # 构建HTML各部分（对所有用户数据进行html.escape防XSS）
         insights_html = '\n'.join([
@@ -381,7 +393,7 @@ class ReportGenerator:
 <body>
     <div class="container">
         <div class="header">
-            <h1>🏃 PowerFun 跑分报告</h1>
+            <h1>🏃 PowerFun 综合分析报告</h1>
             <div class="subtitle">Running Power Analysis Report</div>
             <div class="meta">
                 <div>📅 数据时间范围: {{ stats.get('date_range', {}).get('start', '--') }} 至 {{ stats.get('date_range', {}).get('end', '--') }}</div>
@@ -489,7 +501,7 @@ class ReportGenerator:
                         <tr>
                             <th>日期</th><th>标题</th><th>分类</th>
                             <th>距离 (km)</th><th>配速</th><th>心率 (bpm)</th>
-                            <th>功率 (w)</th><th>步频 (spm)</th>
+                            <th>功率 (w)</th><th>步频 (spm)</th><th>VO2max</th>
                             <th>深度分析</th>
                         </tr>
                     </thead>
@@ -504,6 +516,7 @@ class ReportGenerator:
                             <td>{{ record['hr'] }}</td>
                             <td>{{ record['power'] }}</td>
                             <td>{{ record['cadence'] }}</td>
+                            <td>{{ record['vo2_max'] }}</td>
                             <td>
                                 {% if record.get('deep_analysis_link') %}
                                 <a href="PowerFun_Reports/{{ record['deep_analysis_link'] }}" 
@@ -521,7 +534,7 @@ class ReportGenerator:
         </div>
 
         <div class="footer">
-            <p>🏃 PowerFun 跑分 v2.0 | 由 OpenClaw AI 提供技术支持</p>
+            <p>🏃 综合分析报告 v{{ version }} | 数据来自 Garmin Connect</p>
             <p>支持 Garmin / Coros / 高驰 / Keep 等主流运动平台导出格式</p>
         </div>
     </div>
