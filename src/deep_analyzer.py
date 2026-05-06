@@ -102,9 +102,14 @@ class DeepRunAnalyzer:
             return ""
     
     def _get_hr_zone_ranges(self, row: pd.Series) -> dict:
-        """获取心率区间范围（bpm）"""
-        max_hr = row.get('max_hr') if pd.notna(row.get('max_hr')) else self.max_hr
-        resting_hr = row.get('resting_hr') if pd.notna(row.get('resting_hr')) else self.resting_hr
+        """获取心率区间范围（bpm）
+        
+        始终使用用户配置的 max_hr 和 resting_hr（来自 USER_CONFIG），
+        不使用单次跑步的实际 max_hr（那是当次峰值，不是用户生理上限）。
+        """
+        # 固定使用用户配置的心率参数
+        max_hr = self.max_hr
+        resting_hr = self.resting_hr
         
         # 使用 HR_ZONE_PERCENTAGES 定义（Karvonen HRR 法固定百分比）
         HRR = max_hr - resting_hr
