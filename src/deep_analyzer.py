@@ -492,11 +492,11 @@ class DeepRunAnalyzer:
 
 
 class LLMReportGenerator:
-    """LLM 文字报告生成器"""
+    """LLM 文字报告生成器（使用百炼标准端点）"""
     
     API_KEY_ENV_VARS = [
         'OPENCLAW_ALIYUN_API_KEY',
-        'OPENCLAW_BAILIAN_API_KEY',
+        'OPENCLAW_BAILIAN_API_KEY',  # fallback，但 Coding Plan key 可能不支持非编码场景
     ]
     API_MODEL = 'qwen3.6-plus'
     API_HOST = 'dashscope.aliyuncs.com'
