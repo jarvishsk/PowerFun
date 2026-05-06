@@ -668,9 +668,9 @@ class LLMReportGenerator:
         )
     
     @staticmethod
-    def _call_llm(prompt: str, api_key: str = None, model: str = 'qwen3.6-plus',
-                  host: str = 'dashscope.aliyuncs.com', port: int = None,
-                  use_http: bool = False, path: str = '/compatible-mode/v1/chat/completions',
+    def _call_llm(prompt: str, api_key: str = None, model: str = '',
+                  host: str = '', port: int = None,
+                  use_http: bool = False, path: str = '',
                   max_tokens: int = 2000, temperature: float = 0.7) -> str:
         """通用 LLM 调用方法（供 brief_summary 和 _call_api 复用）"""
         import time
