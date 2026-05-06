@@ -51,7 +51,7 @@ class ChartGenerator:
         # 公共布局样式
         self._common_layout_style = {
             'template': 'plotly_white',
-            'legend': dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            'legend': dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
         }
 
     def _to_js_dict(self, fig_dict: Dict) -> Dict:
@@ -507,6 +507,7 @@ class ChartGenerator:
             xaxis=dict(tickangle=0, title=None, type='category'),
             yaxis=dict(title='时长 (分钟)'),
             barmode='stack',
+            legend_traceorder='reversed',
             height=450,
             **self._common_layout_style
         )
