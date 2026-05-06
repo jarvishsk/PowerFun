@@ -38,49 +38,59 @@ def signed(val: float) -> str:
     return f"+{val:.0f}" if val > 0 else f"{val:.0f}"
 
 def markdown_to_html(md_text: str) -> str:
+    """将 LLM 输出的 Markdown 转为 HTML，支持标题、加粗、列表、分割线"""
     import re
     if not md_text:
         return ""
-    # XSS 过滤：移除危险 HTML 元素
+    # XSS 过滤
     md_text = re.sub(r'<script[^>]*>.*?</script>', '', md_text, flags=re.DOTALL | re.IGNORECASE)
     md_text = re.sub(r'<iframe[^>]*>', '', md_text, flags=re.IGNORECASE)
     md_text = re.sub(r'\bon\w+\s*=', '', md_text, flags=re.IGNORECASE)
+
     # 先处理标题和加粗
     md_text = re.sub(r'^#{2,3}\s+(.+)$', r'<h3>\1</h3>', md_text, flags=re.MULTILINE)
     md_text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', md_text)
-    # 按行分割处理
+    # 处理分割线
+    md_text = re.sub(r'^---\s*$', '<hr>', md_text, flags=re.MULTILINE)
+
     lines = md_text.split('\n')
     result = []
-    prev_was_h3 = False
-    consecutive_blanks = 0
+    in_list = False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            result.append('</ul>')
+            in_list = False
+
     for line in lines:
         stripped = line.strip()
-        if stripped == '':
-            # 跳过 h3 后面的空行（标题和内容之间不留空行）
-            if prev_was_h3:
-                continue
-            consecutive_blanks += 1
-            # 连续空行只保留 1 个（分隔不同项），多余的忽略
-            if consecutive_blanks == 1:
-                result.append('')
+        if not stripped or stripped == '<hr>':
+            close_list()
+            if stripped == '<hr>':
+                result.append('<hr>')
+            continue
+
+        # 列表项: * xxx 或 - xxx
+        list_match = re.match(r'^[\*\-]\s+(.+)$', stripped)
+        if list_match:
+            if not in_list:
+                result.append('<ul>')
+                in_list = True
+            content = list_match.group(1)
+            # 处理列表项中的 **加粗**
+            content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
+            result.append(f'<li>{content}</li>')
         else:
-            result.append(stripped)
-            consecutive_blanks = 0
-        prev_was_h3 = stripped.startswith('<h3>')
-    # 用 <br> 连接，但 h3 标题后不插 <br>（标题和内容紧贴）
-    final = []
-    for i, part in enumerate(result):
-        if part == '':
-            final.append('<br>')
-        elif i > 0 and result[i-1].startswith('<h3>'):
-            final.append(part)  # h3 后直接拼接，不插入 <br>
-        elif i > 0:
-            final.append('<br>')
-            final.append(part)
-        else:
-            final.append(part)
-    return ''.join(final)
-    return ''.join(final)
+            close_list()
+            # 非列表行：跳过 h3 后的空行，其他按段落处理
+            if stripped.startswith('<h3>'):
+                result.append(stripped)
+            else:
+                result.append(f'<p>{stripped}</p>')
+
+    close_list()
+    return '\n'.join(result)
 
 def truncate_text(text, max_len):
     return text[:max_len] if text else ''
@@ -147,8 +157,12 @@ ANALYSIS_HTML_TEMPLATE = """
         .trend-flat { color: #6c757d; }
         .finding { padding: 8px 12px; background: #f0f4ff; border-left: 3px solid #667eea; border-radius: 4px; margin: 8px 0; }
         .llm-report { background: #fafafa; border-radius: 8px; padding: 20px; line-height: 1.8; }
-        .llm-report h3 { color: #667eea; margin: 16px 0 8px; }
+        .llm-report h3 { color: #667eea; margin: 16px 0 8px; font-size: 16px; }
         .llm-report h3:first-child { margin-top: 0; }
+        .llm-report ul { margin: 8px 0 8px 20px; padding: 0; list-style: disc; }
+        .llm-report li { margin: 4px 0; }
+        .llm-report hr { border: none; border-top: 1px solid #e0e0e0; margin: 16px 0; }
+        .llm-report p { margin: 8px 0; }
         .footer { text-align: center; padding: 16px; font-size: 12px; color: #999; }
         @media print { body { background: white; } .section { box-shadow: none; border: 1px solid #eee; } }
     </style>
