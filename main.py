@@ -356,7 +356,7 @@ def _print_summary(stats: dict):
 
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
-                 max_hr: int, resting_hr: int) -> None:
+                 max_hr: int, resting_hr: int, user_note: str = None) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
@@ -539,7 +539,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             pa_hr_history_chart = None
 
         llm_gen = LLMReportGenerator(df_all=df)
-        llm_report, actual_model = llm_gen.generate(analysis_data)
+        llm_report, actual_model = llm_gen.generate(analysis_data, user_note=user_note)
 
         report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
         html_path = report_gen_deep.generate(analysis_data, llm_report,
@@ -667,7 +667,7 @@ def _main_inner(args, fetcher):
         stats = _get_summary_stats(df)
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
-                     args.max_hr, args.resting_hr)
+                     args.max_hr, args.resting_hr, user_note=args.user_note)
         return
 
     # ==========================================================
@@ -824,7 +824,7 @@ def _main_inner(args, fetcher):
     stats = _get_summary_stats(df)
     _run_reports(df, output_dir, stats, args.dry_run,
                  args.deep_analyze, args.deep_analyze_all,
-                 args.max_hr, args.resting_hr)
+                 args.max_hr, args.resting_hr, user_note=args.user_note)
 
 
 if __name__ == "__main__":
