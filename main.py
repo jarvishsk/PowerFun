@@ -72,7 +72,6 @@ from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
 from src.chart_generator import ChartGenerator
 from src.report_generator import ReportGenerator
-from src.pdf_generator import generate_pdf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +124,10 @@ def parse_args():
                         help="对所有跑步批量生成深析报告")
     parser.add_argument("--load-parquet", action="store_true",
                         help="从全量数据文件加载（跳过 API 拉取和清洗，直接从 parquet 读取报告数据）")
+    parser.add_argument("--pdf-only", action="store_true",
+                        help="仅生成 PDF 报告（从已有 HTML 转换，不重新分析数据）")
+    parser.add_argument("--user-note", type=str, default=None,
+                        help="跑者体感备注（仅 --deep-analyze 模式有效，将与客观数据一起提交给 AI 综合分析）")
 
     return parser.parse_args()
 
@@ -178,7 +181,7 @@ def _export_csv(df: pd.DataFrame, csv_path: Path) -> None:
 def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           analysis_dir: Path, output_dir: Path,
                           max_hr: int, resting_hr: int,
-                          fetcher=None) -> str:
+                          fetcher=None, user_note: str = None) -> str:
     """对单次跑步生成深度分析报告"""
     
     from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
@@ -241,25 +244,72 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                 lap_hr_chart_html = ''
 
     analyzer = DeepRunAnalyzer(df, target_date=target_run.get('date'),
-                               max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data)
+                               max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data,
+                               raw_laps=current_laps)
     analysis_data = analyzer.analyze(target_run)
+    
+    # 计算Pa:Hr历史数据（>=3km的跑步）
+    pa_hr_history = []
+    pa_hr_history_data = df[
+        (df['distance'] >= 3.0) &
+        (df['activity_id'] != activity_id)  # 排除当前跑步
+    ].copy()
+    
+    # 需要计算Pa:Hr历史趋势（如果当前跑步>=3km且有lap数据）
+    pa_hr_current = analysis_data.get('pa_hr')
+    pa_hr_history_list = []
+    
+    if len(pa_hr_history_data) >= 3:  # 至少3个样本
+        chart_gen = ChartGenerator()
+        for _, row in pa_hr_history_data.iterrows():
+            # 获取该次跑步的分圈数据
+            hist_activity_id = row.get('activity_id')
+            if hist_activity_id:
+                hist_laps = fetcher._load_lap_cache(hist_activity_id) if fetcher else None
+                if hist_laps:
+                    # 重新计算Pa:Hr
+                    hist_analyzer = DeepRunAnalyzer(df, max_hr=max_hr, resting_hr=resting_hr)
+                    hist_pa_hr = hist_analyzer._calc_pa_hr(hist_laps)
+                    if hist_pa_hr:
+                        pa_hr_history_list.append({
+                            'date': row['date'].strftime('%Y-%m-%d'),
+                            'category': row.get('category', 'unknown'),
+                            'category_color': row.get('category_color', '#999999'),
+                            'category_icon': row.get('category_icon', '🏃'),
+                            'distance': row.get('distance', 0),
+                            'mid_temp': (row.get('min_temperature', 0) + row.get('max_temperature', 0)) / 2 if pd.notna(row.get('min_temperature')) and pd.notna(row.get('max_temperature')) else 0,
+                            'pa_hr_pct': hist_pa_hr.get('pa_hr_pct', 0),
+                            'pa_hr_abs': hist_pa_hr.get('pa_hr_abs', 0)
+                        })
+        
+        # 生成Pa:Hr历史趋势图
+        pa_hr_history_chart = chart_gen.create_pa_hr_trend_chart(pa_hr_history_list)
+    else:
+        pa_hr_history_chart = None
 
-    llm_gen = LLMReportGenerator()
-    llm_report = llm_gen.generate(analysis_data)
-
+    llm_gen = LLMReportGenerator(df_all=df)
+    llm_report, actual_model = llm_gen.generate(analysis_data, user_note=user_note)
+    
     report_gen = AnalysisReportGenerator(str(analysis_dir))
     html_path = report_gen.generate(analysis_data, llm_report,
                                     lap_pace_chart_html=lap_pace_chart_html,
                                     lap_hr_chart_html=lap_hr_chart_html,
-                                    lap_count=lap_count)
+                                    lap_count=lap_count,
+                                    pa_hr=pa_hr_current,
+                                    pa_hr_history=pa_hr_history_chart,
+                                    model_name=actual_model)
 
     date_str = target_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-    local_pdf = str(analysis_dir / f"run_analysis_{date_str}.pdf")
-    generate_pdf(html_path, local_pdf, icloud_dir=DEFAULT_CONFIG["icloud_deep_analysis_dir"],
-                 height=DEFAULT_CONFIG["deep_pdf_height"], width=DEFAULT_CONFIG["deep_pdf_width"])
+    # 复制到 iCloud（先删旧文件再复制）
+    icloud_dir = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir'])
+    icloud_dir.mkdir(parents=True, exist_ok=True)
+    icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
+    import shutil
+    icloud_path.unlink(missing_ok=True)
+    shutil.copy2(html_path, icloud_path)
 
     logger.info(f"✅ 深度分析报告已生成: {html_path}")
-    logger.info(f"   PDF: {local_pdf}")
+    logger.info(f"   iCloud: {icloud_path}")
     return html_path
 
 
@@ -279,6 +329,7 @@ def _get_summary_stats(df: pd.DataFrame) -> dict:
     else:
         stats['date_range'] = {'start': '--', 'end': '--'}
     return stats
+
 
 
 def _print_summary(stats: dict):
@@ -311,6 +362,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
     max_hr 和 resting_hr 由 argparse 默认从 DEFAULT_CONFIG 读取。
     """
+    from src.config import LLM_CONFIG
+    model_name = LLM_CONFIG.get('display_name', 'AI模型')
     
     if args.dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
@@ -355,7 +408,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             logger.info(f"🎯 深度分析: {target_run.get('title', '')} ({target_run.get('date', '')})")
 
             _generate_deep_report(df, target_run, analysis_dir, output_dir,
-                                  max_hr=max_hr, resting_hr=resting_hr)
+                                  max_hr=max_hr, resting_hr=resting_hr,
+                                  user_note=args.user_note)
         else:
             # --deep-analyze-all: 遍历所有记录
             logger.info(f"📊 批量深度分析: {len(df)} 条记录...")
@@ -380,12 +434,138 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
             logger.info(f"✅ 批量深度分析完成: 共生成 {count} 条新报告")
 
-        return
+    # 深析模式不再生成综合报告 PDF（只生成深析报告）
+    skip_pdf = bool(deep_analyze or deep_analyze_all)
 
     # ----------------------------------------------------------
-    # Step 7: 生成可视化图表
+    # Step 7: 生成深度分析报告（正常模式：最近一次跑步）
     # ----------------------------------------------------------
-    logger.info("Step 7/10: 生成可视化图表...")
+    if not deep_analyze and not deep_analyze_all:
+        logger.info("Step 7/10: 生成深度分析报告（最近一次跑步）...")
+        from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+        from src.analysis_report import AnalysisReportGenerator
+
+        analysis_dir = output_dir / "PowerFun_Reports"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        latest_run = df.iloc[-1]  # DataFrame 已按日期排序
+        activity_id = latest_run.get('activity_id')
+        lap_data = {}
+        recent_laps = []
+        lap_pace_chart_html = ''
+        lap_hr_chart_html = ''
+        lap_count = 0
+        current_laps = None
+
+        if activity_id:
+            temp_fetcher = GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
+            current_laps = temp_fetcher._load_lap_cache(activity_id)
+
+            if current_laps:
+                lap_count = len(current_laps)
+                category = latest_run.get('category', '')
+                N = min(5, len(df))
+                if category and 'category' in df.columns:
+                    df_same = df[df['category'] == category]
+                else:
+                    df_same = df
+                df_same = df_same[df_same['activity_id'] != activity_id]
+                df_same = df_same.sort_values('date', ascending=False).head(N)
+
+                for _, row in df_same.iterrows():
+                    hist_id = row.get('activity_id')
+                    if hist_id:
+                        hist_laps = temp_fetcher._load_lap_cache(hist_id)
+                        if hist_laps:
+                            recent_laps.append(hist_laps)
+
+                analyzer_for_laps = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
+                                                     max_hr=max_hr, resting_hr=resting_hr)
+                lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
+
+                try:
+                    cat_name = latest_run.get('category_name', '跑步')
+                    chart_gen_lap = ChartGenerator()
+                    lap_pace_chart_html = chart_gen_lap.generate_lap_pace_chart_v2(current_laps, recent_laps, cat_name)
+                    lap_hr_chart_html = chart_gen_lap.generate_lap_hr_chart(current_laps, recent_laps, cat_name)
+                except Exception as e:
+                    logger.warning(f"分圈图表生成失败: {e}")
+                    lap_pace_chart_html = ''
+                    lap_hr_chart_html = ''
+            temp_fetcher.close()
+
+        analyzer = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
+                                   max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data,
+                                   raw_laps=current_laps)
+        analysis_data = analyzer.analyze(latest_run)
+        
+        # 计算Pa:Hr历史数据（>=3km的跑步）
+        pa_hr_history = []
+        pa_hr_history_data = df[
+            (df['distance'] >= 3.0) &
+            (df['activity_id'] != latest_run.get('activity_id'))  # 排除当前跑步
+        ].copy()
+        
+        # 需要计算Pa:Hr历史趋势（如果当前跑步>=3km且有lap数据）
+        pa_hr_current = analysis_data.get('pa_hr')
+        pa_hr_history_list = []
+        
+        if len(pa_hr_history_data) >= 3:  # 至少3个样本
+            chart_gen = ChartGenerator()
+            for _, row in pa_hr_history_data.iterrows():
+                # 获取该次跑步的分圈数据
+                hist_activity_id = row.get('activity_id')
+                if hist_activity_id:
+                    hist_laps = temp_fetcher._load_lap_cache(hist_activity_id)
+                    if hist_laps:
+                        # 重新计算Pa:Hr
+                        hist_analyzer = DeepRunAnalyzer(df, max_hr=max_hr, resting_hr=resting_hr)
+                        hist_pa_hr = hist_analyzer._calc_pa_hr(hist_laps)
+                        if hist_pa_hr:
+                            pa_hr_history_list.append({
+                                'date': row['date'].strftime('%Y-%m-%d'),
+                                'category': row.get('category', 'unknown'),
+                                'category_color': row.get('category_color', '#999999'),
+                                'category_icon': row.get('category_icon', '🏃'),
+                                'distance': row.get('distance', 0),
+                                'mid_temp': (row.get('min_temperature', 0) + row.get('max_temperature', 0)) / 2 if pd.notna(row.get('min_temperature')) and pd.notna(row.get('max_temperature')) else 0,
+                                'pa_hr_pct': hist_pa_hr.get('pa_hr_pct', 0),
+                                'pa_hr_abs': hist_pa_hr.get('pa_hr_abs', 0)
+                            })
+            
+            # 生成Pa:Hr历史趋势图
+            pa_hr_history_chart = chart_gen.create_pa_hr_trend_chart(pa_hr_history_list)
+        else:
+            pa_hr_history_chart = None
+
+        llm_gen = LLMReportGenerator(df_all=df)
+        llm_report, actual_model = llm_gen.generate(analysis_data)
+
+        report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
+        html_path = report_gen_deep.generate(analysis_data, llm_report,
+                                             lap_pace_chart_html=lap_pace_chart_html,
+                                             lap_hr_chart_html=lap_hr_chart_html,
+                                             lap_count=lap_count,
+                                             pa_hr=pa_hr_current,
+                                             pa_hr_history=pa_hr_history_chart,
+                                             model_name=actual_model)
+
+        date_str = latest_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
+        # 复制到 iCloud
+        icloud_dir = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir'])
+        icloud_dir.mkdir(parents=True, exist_ok=True)
+        icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
+        import shutil
+        icloud_path.unlink(missing_ok=True)
+        shutil.copy2(html_path, icloud_path)
+
+        logger.info(f"✅ 深度分析报告已生成: {html_path}")
+        logger.info(f"   iCloud: {icloud_path}")
+
+    # ----------------------------------------------------------
+    # Step 8: 生成可视化图表
+    # ----------------------------------------------------------
+    logger.info("Step 8/10: 生成可视化图表...")
     chart_gen = ChartGenerator()
     charts_data = chart_gen.generate_all_charts(df)
     logger.info(f"✅ 已生成 {len(charts_data)} 个图表")
@@ -395,111 +575,32 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
     # ----------------------------------------------------------
-    # Step 8: 生成 HTML 综合报告
+    # Step 9: 生成 HTML 综合报告（深析报告已在上一步生成，链接可见）
     # ----------------------------------------------------------
-    logger.info("Step 8/10: 生成 HTML 报告...")
+    logger.info("Step 9/10: 生成 HTML 报告...")
 
     main_report_path = str(output_dir / "PowerFun.html")
 
     report_gen = ReportGenerator()
     report_gen.generate_html(df, charts_data, stats, main_report_path,
-                             analysis_dir=str(analysis_dir))
+                             analysis_dir=str(analysis_dir),
+                             model_name=model_name)
 
     logger.info("=" * 60)
     logger.info(f"✅ 主报告已生成: {main_report_path}")
     logger.info("=" * 60)
 
     # ----------------------------------------------------------
-    # Step 9: 生成 PDF 综合报告
+    # Step 10: 复制 HTML 综合报告到 iCloud
     # ----------------------------------------------------------
-    logger.info("Step 9/10: 生成 PDF 报告...")
-    local_pdf = str(output_dir / '综合分析报告.pdf')
-    os.makedirs(os.path.dirname(local_pdf), exist_ok=True)
-    generate_pdf(
-        html_path=main_report_path,
-        output_path=local_pdf,
-        icloud_dir=DEFAULT_CONFIG['icloud_deep_analysis_dir'],
-        height=DEFAULT_CONFIG['pdf_height'],
-        width=DEFAULT_CONFIG['pdf_width'],
-    )
-
-    # ----------------------------------------------------------
-    # Step 10: 生成深度分析报告（最近一次跑步）
-    # ----------------------------------------------------------
-    logger.info("Step 10/10: 生成深度分析报告（最近一次跑步）...")
-    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
-    from src.analysis_report import AnalysisReportGenerator
-
-    # 加载分圈数据
-    latest_run = df.iloc[-1]  # DataFrame 已按日期排序
-    activity_id = latest_run.get('activity_id')
-    lap_data = {}
-    recent_laps = []
-    lap_pace_chart_html = ''
-    lap_hr_chart_html = ''
-    lap_count = 0
-
-    if activity_id:
-        # 创建临时 fetcher 用于读取缓存（无需认证）
-        temp_fetcher = GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
-        current_laps = temp_fetcher._load_lap_cache(activity_id)
-        
-        if current_laps:
-            lap_count = len(current_laps)
-            # 加载前 N 次同类型的分圈数据
-            category = latest_run.get('category', '')
-            N = min(5, len(df))
-            if category and 'category' in df.columns:
-                df_same = df[df['category'] == category]
-            else:
-                df_same = df
-            df_same = df_same[df_same['activity_id'] != activity_id]
-            df_same = df_same.sort_values('date', ascending=False).head(N)
-            
-            for _, row in df_same.iterrows():
-                hist_id = row.get('activity_id')
-                if hist_id:
-                    hist_laps = temp_fetcher._load_lap_cache(hist_id)
-                    if hist_laps:
-                        recent_laps.append(hist_laps)
-            
-            # 分析分圈数据
-            analyzer_for_laps = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
-                                                 max_hr=max_hr, resting_hr=resting_hr)
-            lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
-            
-            # 生成分圈配速图和心率图（需求 4：拆分为两张图）
-            try:
-                cat_name = latest_run.get('category_name', '跑步')
-                chart_gen = ChartGenerator()
-                lap_pace_chart_html = chart_gen.generate_lap_pace_chart_v2(current_laps, recent_laps, cat_name)
-                lap_hr_chart_html = chart_gen.generate_lap_hr_chart(current_laps, recent_laps, cat_name)
-            except Exception as e:
-                logger.warning(f"分圈图表生成失败: {e}")
-                lap_pace_chart_html = ''
-                lap_hr_chart_html = ''
-        temp_fetcher.close()
-
-    analyzer = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
-                               max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data)
-    analysis_data = analyzer.analyze(latest_run)
-
-    llm_gen = LLMReportGenerator()
-    llm_report = llm_gen.generate(analysis_data)
-
-    report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
-    html_path = report_gen_deep.generate(analysis_data, llm_report,
-                                         lap_pace_chart_html=lap_pace_chart_html,
-                                         lap_hr_chart_html=lap_hr_chart_html,
-                                         lap_count=lap_count)
-
-    date_str = latest_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-    pdf_path = str(analysis_dir / f"深度分析报告_{date_str}.pdf")
-    generate_pdf(html_path, pdf_path, icloud_dir=DEFAULT_CONFIG["icloud_deep_analysis_dir"],
-                 height=DEFAULT_CONFIG["deep_pdf_height"], width=DEFAULT_CONFIG["deep_pdf_width"])
-
-    logger.info(f"✅ 深度分析报告已生成: {html_path}")
-    logger.info(f"   PDF: {pdf_path}")
+    logger.info("Step 10/10: 复制综合报告到 iCloud...")
+    icloud_dir = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir'])
+    icloud_dir.mkdir(parents=True, exist_ok=True)
+    icloud_report = icloud_dir / "PowerFun.html"
+    import shutil
+    icloud_report.unlink(missing_ok=True)
+    shutil.copy2(main_report_path, icloud_report)
+    logger.info(f"✅ iCloud 报告: {icloud_report}")
 
     _print_summary(stats)
 
@@ -516,6 +617,24 @@ def main():
         fetcher.logout(delete_tokens=True)
         fetcher.close()
         logger.info("已删除认证 token")
+        return
+
+    if args.pdf_only:
+        logger.info("=" * 60)
+        logger.info("📄 PDF 生成模式（从已有 HTML 转换）")
+        logger.info("=" * 60)
+        from src.pdf_generator import generate_pdf_reports
+        try:
+            results = generate_pdf_reports()
+            logger.info("=" * 60)
+            if results['comprehensive']:
+                logger.info(f"✅ 综合分析 PDF: {results['comprehensive']}")
+            if results['deep']:
+                logger.info(f"✅ 深度分析 PDF: {results['deep']}")
+            logger.info("=" * 60)
+        except Exception as e:
+            logger.error(f"PDF 生成失败: {e}")
+            sys.exit(1)
         return
 
     try:

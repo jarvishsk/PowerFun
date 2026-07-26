@@ -1,3 +1,10 @@
+---
+name: powerfun
+description: "跑步数据分析。当用户要求分析跑步数据、跑分、查看跑步报告时使用。基于 Garmin Connect 数据，生成 HTML/PDF 综合报告和深度分析报告。"
+metadata:
+  {"openclaw": {"requires": {"bins": ["python3"]}}}
+---
+
 # PowerFun 跑步数据分析技能
 
 完全独立的跑步数据分析技能，整合 Garmin Connect (China) 数据获取 + 跑步数据分析 + 可视化报告生成。
@@ -8,7 +15,11 @@
 - `分析今天跑步数据`
 - `分析跑步数据`
 - `跑分`
+- `跑分PDF`
+- `生成跑分PDF`
 - `PowerFun`
+
+> **注意**：`跑分PDF` / `生成跑分PDF` 是独立的 PDF 转换功能，直接从已有 HTML 报告生成 PDF，不重新分析数据。需要先运行过一次完整的分析流程生成 HTML 报告。
 
 ## 功能
 
@@ -35,21 +46,28 @@ USER_CONFIG = {
 
 ## 使用
 
+项目位置：`~/Projects/skills/PowerFun`
+
 ```bash
+cd ~/Projects/skills/PowerFun
+
 # 首次运行（输入账号密码，登录后 token 自动保存）
-python main.py --email YOUR_EMAIL --password YOUR_PASSWORD
+python3 main.py --email YOUR_EMAIL --password YOUR_PASSWORD
 
 # 后续运行（自动加载 token，无需密码）
-python main.py
+python3 main.py
 
 # 从 parquet 生成报告（跳过 API 拉取）
-python main.py --load-parquet
+python3 main.py --load-parquet
 
 # 单独深析指定日期
-python main.py --deep-analyze "2026-05-03"
+python3 main.py --deep-analyze "2026-05-03"
+
+# 仅生成 PDF 报告（从已有 HTML 转换，不重新分析数据）
+python3 main.py --pdf-only
 
 # 仅拉取数据
-python main.py --dry-run
+python3 main.py --dry-run
 ```
 
 ## 输出

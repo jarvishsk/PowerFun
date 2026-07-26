@@ -323,6 +323,10 @@ class DataProcessor:
         elif field == "bmr_calories":
             return self._first_not_none(
                 activity.get("bmrCalories"), summary.get("bmrCalories"))
+        elif field == "min_temperature":
+            return activity.get("minTemperature")
+        elif field == "max_temperature":
+            return activity.get("maxTemperature")
         elif field == "stride_length":
             return self._first_not_none(
                 activity.get("strideLength"), activity.get("avgStrideLength"))

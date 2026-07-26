@@ -13,6 +13,29 @@
 - **📄 综合分析报告**: HTML + PDF 格式，包含详细数据表、可视化图表、月度统计，移动端友好
 - **🔍 深度分析报告**: 单次跑步深度分析（HTML + PDF + iCloud 同步），包含能力对比、分圈表现、AI 教练建议
 
+## 数据流
+
+### 正常模式 / --load-parquet
+
+```
+数据管线:  API → 清洗 → 过滤 → 心率分类 → 跑分类 → 保存 parquet
+                                                        ↓
+报告管线:  Step 7: 深析报告（最近一次跑步，HTML + PDF）
+          Step 8: 9 个 Plotly 交互式图表
+          Step 9: HTML 综合报告（含深析链接）
+          Step 10: PDF 综合报告
+```
+
+### --deep-analyze 模式
+
+```
+数据管线:  读取 parquet
+          Step 7: 指定跑步的深析报告（HTML + PDF）
+          Step 8: 9 个 Plotly 交互式图表
+          Step 9: HTML 综合报告（含深析链接）
+         Step 10: 跳过综合报告 PDF
+```
+
 ## 快速开始
 
 ### 安装
@@ -33,14 +56,17 @@ python main.py --email your_email@example.com --password your_password
 ### 日常使用
 
 ```bash
-# 从 Garmin API 拉取最新数据并生成报告
+# 从 Garmin API 拉取最新数据并生成完整报告（深析 + 综合）
 python main.py
 
 # 跳过 API 拉取，直接从已有数据生成报告
 python main.py --load-parquet
 
-# 查看某次跑步的深度分析报告
+# 查看指定跑步的深度分析报告（同时更新综合报告链接）
 python main.py --deep-analyze "2026-05-05"
+
+# 对所有跑步批量生成深析报告
+python main.py --deep-analyze-all
 
 # 指定心率参数（可选，默认从配置文件读取）
 python main.py --max-hr 180 --resting-hr 60

@@ -115,6 +115,8 @@ EXTRA_FIELDS = [
     'stride_length',             # 步幅 (cm)
     'vO2_max',                   # 最大摄氧量
     'bmr_calories',              # 基础代谢卡路里
+    'min_temperature',           # 最低温度 (°C)
+    'max_temperature',           # 最高温度 (°C)
 ]
 
 # ============================================================
@@ -159,11 +161,6 @@ DEFAULT_CONFIG = {
     'max_distance_km': 50,     # 单次跑步最大距离过滤阈值
     # 深析参数
     'deep_analysis_max_runs': 5,  # 对比分析取最近 N 次同类型
-    # PDF 尺寸
-    'pdf_height': '1600mm',    # PDF 页面高度默认值（主报告）
-    'pdf_width': '370mm',      # PDF 页面宽度默认值（主报告）
-    'deep_pdf_height': '1400mm',    # 深析报告 PDF 高度
-    'deep_pdf_width': '230mm',     # 深析报告 PDF 宽度
 }
 
 # Garmin API 端点 (China 区域)
@@ -184,20 +181,38 @@ GARMIN_API = {
 
 import os as _os
 
+# 🔧 自动加载 ~/.openclaw/.env 环境变量（如 POWERFUN_LLM_API_KEY）
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(_os.path.expanduser('~/.openclaw/.env'))
+
+# 旧配置（智谱 GLM）备份，如需切回取消注释即可：
+# LLM_CONFIG = {
+#     'model': 'GLM-4.7-Flash',
+#     'host': 'open.bigmodel.cn',
+#     'port': None,
+#     'path': '/api/paas/v4/chat/completions',
+#     'use_http': False,
+#     'max_tokens': 8192,
+#     'temperature': 0.7,
+#     'api_key': _os.environ.get('ZHIPU_API_KEY', ''),
+#     'display_name': 'GLM-4.7-Flash',
+# }
+
 LLM_CONFIG = {
-    # 模型名称
-    'model': 'gemma-4-E4B-it-MLX-4bit',
-    # API 服务地址
-    'host': '127.0.0.1',
-    'port': 11333,              # 本地模型需要端口，云端可设为 None
-    'path': '/v1/chat/completions',
+    # 模型名称（Kimi Coding，OpenAI 兼容端点）
+    'model': 'k3',
+    # API 服务地址（Kimi Coding）
+    'host': 'api.kimi.com',
+    'port': None,               # 本地模型需要端口，云端可设为 None
+    'path': '/coding/v1/chat/completions',
     # 本地模型用 HTTP，云端自动切换 HTTPS
-    'use_http': True,           # True=HTTP, False=HTTPS
-    # 生成参数
-    'max_tokens': 2000,
-    'temperature': 0.7,
-    # API Key：从环境变量读取（优先 POWERFUN_LLM_API_KEY，其次 OPENCLAW_ALIYUN_API_KEY）
-    'api_key': _os.environ.get('POWERFUN_LLM_API_KEY', _os.environ.get('OPENCLAW_ALIYUN_API_KEY', '')),
+    'use_http': False,          # True=HTTP, False=HTTPS
+    # 生成参数（k3 为 reasoning 模型，服务端仅允许 temperature=1）
+    'max_tokens': 8192,
+    'temperature': 1,
+    # API Key：从环境变量读取（KIMI_API_KEY）
+    'api_key': _os.environ.get('KIMI_API_KEY', ''),
+    'display_name': 'k3',  # 与 model 字段保持一致，footer 显示实际模型
 }
 
 # 心率区间颜色（供各模块统一使用）

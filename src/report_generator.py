@@ -176,7 +176,7 @@ class ReportGenerator:
                 charts_json[key] = 'null'
         return charts_json
 
-    def generate_html(self, df: pd.DataFrame, charts: Dict, stats: Dict, output_path: str, analysis_dir: str = None):
+    def generate_html(self, df: pd.DataFrame, charts: Dict, stats: Dict, output_path: str, analysis_dir: str = None, model_name: str = 'AI模型'):
         """生成HTML报告"""
         insights = self.generate_insights(df, stats)
         table_data = self._prepare_table_data(df, analysis_dir=analysis_dir)

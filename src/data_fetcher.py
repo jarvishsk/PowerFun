@@ -11,6 +11,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+# Patch: pre-populate OAUTH_CONSUMER to bypass GFW-blocked S3 download
+import garth.sso
+garth.sso.OAUTH_CONSUMER = {
+    'consumer_key': 'fc3e99d2-118c-44b8-8ae3-03370dde24c0',
+    'consumer_secret': 'E08WAR897WEy2knn7aFBrvegVAf0AFdWBBF'
+}
 import garth
 import httpx
 import pandas as pd
@@ -113,7 +119,8 @@ class GarminDataFetcher:
         try:
             garth.resume(str(self._token_path))
             self._is_authenticated = True
-            self._username = getattr(garth.client, "username", None)
+            # username 获取会触发 API 调用，可能超时；延迟到实际需要时再获取
+            self._username = None
             logger.info("已加载保存的认证 token")
             return True
         except Exception as e:
