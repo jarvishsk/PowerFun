@@ -203,9 +203,9 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
         
         if current_laps:
             lap_count = len(current_laps)
-            # 加载前 N 次同类型的分圈数据（N=min(5, 可用次数), N≥1）
+            # 加载前 N 次同类型的分圈数据（P20-P80 百分位统计需要足够样本，N=10）
             category = target_run.get('category', '')
-            N = min(5, len(df))
+            N = 10
             if category and 'category' in df.columns:
                 df_same = df[df['category'] == category]
             else:
@@ -464,7 +464,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             if current_laps:
                 lap_count = len(current_laps)
                 category = latest_run.get('category', '')
-                N = min(5, len(df))
+                N = 10  # 同类型历史样本上限（P20-P80 百分位统计需要足够样本）
                 if category and 'category' in df.columns:
                     df_same = df[df['category'] == category]
                 else:

@@ -1558,6 +1558,18 @@ class ChartGenerator:
 
         return charts
     
+    @staticmethod
+    def _iqr_filter(values: list) -> list:
+        """IQR 异常值过滤：剔除 [Q1-1.5×IQR, Q3+1.5×IQR] 之外的值。
+        样本 <4 时不过滤（小样本分位数不稳定）；全部被剔除时保留原样本。"""
+        if len(values) < 4:
+            return values
+        q1, q3 = np.percentile(values, [25, 75])
+        iqr = q3 - q1
+        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        filtered = [v for v in values if lo <= v <= hi]
+        return filtered if filtered else values
+
     def _compute_total_km(self, lap_data: list[dict]) -> int:
         """根据分圈数据计算总距离，向下取整为整数KM"""
         total_m = sum(lap.get('distance_m', 0) for lap in lap_data)
@@ -1610,9 +1622,10 @@ class ChartGenerator:
             ))
             
             # 需求 3：历史数据处理——同一 KM 序号，只使用有数据的记录计算
+            # IQR 异常值过滤 + numpy 真分位数插值；样本 <8 时降级只显示中位线
+            hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
+            show_band = bool(recent_laps) and len(recent_laps) >= 8
             if recent_laps:
-                hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
-                
                 for lap_idx in range(1, total_km + 1):
                     paces = []
                     for run_laps in recent_laps:
@@ -1623,14 +1636,14 @@ class ChartGenerator:
                                     paces.append(p)
                     
                     if paces:
-                        sorted_p = sorted(paces)
-                        n = len(sorted_p)
-                        median = sorted_p[n // 2]
-                        p20 = sorted_p[max(0, 2 * n // 10)]
-                        p80 = sorted_p[min(n - 1, 8 * n // 10)]
-                        hist_median_pace.append(median)
-                        hist_p20_pace.append(p20)
-                        hist_p80_pace.append(p80)
+                        paces = self._iqr_filter(paces)
+                        hist_median_pace.append(float(np.percentile(paces, 50)))
+                        if show_band:
+                            hist_p20_pace.append(float(np.percentile(paces, 20)))
+                            hist_p80_pace.append(float(np.percentile(paces, 80)))
+                        else:
+                            hist_p20_pace.append(None)
+                            hist_p80_pace.append(None)
                     else:
                         hist_median_pace.append(None)
                         hist_p20_pace.append(None)
@@ -1650,22 +1663,31 @@ class ChartGenerator:
                 ))
                 
                 # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
-                fig.add_trace(go.Scatter(
-                    x=hist_x + hist_x[::-1],
-                    y=[v if v is not None else 0 for v in hist_p20_pace] +
-                      [v if v is not None else 0 for v in hist_p80_pace[::-1]],
-                    fill='toself',
-                    fillcolor='rgba(65, 105, 225, 0.15)',
-                    line=dict(color='rgba(255,255,255,0)'),
-                    name='历史P20-P80区间',
-                    hoverinfo='skip',
-                    showlegend=True,
-                ))
+                # 样本 <8 时降级不画区间；剔除无数据公里，避免阴影掉到 0
+                if show_band:
+                    band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
+                            if a is not None and b is not None]
+                    if band:
+                        bx = [p[0] for p in band]
+                        fig.add_trace(go.Scatter(
+                            x=bx + bx[::-1],
+                            y=[p[1] for p in band] + [p[2] for p in reversed(band)],
+                            fill='toself',
+                            fillcolor='rgba(65, 105, 225, 0.15)',
+                            line=dict(color='rgba(255,255,255,0)'),
+                            name='历史P20-P80区间',
+                            hoverinfo='skip',
+                            showlegend=True,
+                        ))
             
             # 需求 1：Y 轴使用自定义 ticktext 显示 X:XX/KM 格式
+            # 范围取本次与历史区间的并集，避免阴影溢出可视区被裁、刻度缺失
             valid_paces = [p for p in pace_values if p > 0]
-            max_pace = max(valid_paces) if valid_paces else 420
-            min_pace = min(valid_paces) if valid_paces else 300
+            hist_vals = [v for v in (hist_median_pace + hist_p20_pace + hist_p80_pace)
+                         if v is not None]
+            all_vals = valid_paces + hist_vals
+            max_pace = max(all_vals) if all_vals else 420
+            min_pace = min(all_vals) if all_vals else 300
             y_padding = (max_pace - min_pace) * 0.15 if max_pace > min_pace else 15
             
             # 生成 Y 轴刻度（以 15 秒为间隔），确保范围覆盖所有刻度
@@ -1749,9 +1771,10 @@ class ChartGenerator:
             ))
             
             # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
+            # IQR 异常值过滤 + numpy 真分位数插值；样本 <8 时降级只显示中位线
+            hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
+            show_band = bool(recent_laps) and len(recent_laps) >= 8
             if recent_laps:
-                hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
-                
                 for lap_idx in range(1, total_km + 1):
                     hrs = []
                     for run_laps in recent_laps:
@@ -1762,14 +1785,14 @@ class ChartGenerator:
                                     hrs.append(h)
                     
                     if hrs:
-                        sorted_h = sorted(hrs)
-                        n = len(sorted_h)
-                        median = sorted_h[n // 2]
-                        p20 = sorted_h[max(0, 2 * n // 10)]
-                        p80 = sorted_h[min(n - 1, 8 * n // 10)]
-                        hist_median_hr.append(median)
-                        hist_p20_hr.append(p20)
-                        hist_p80_hr.append(p80)
+                        hrs = self._iqr_filter(hrs)
+                        hist_median_hr.append(float(np.percentile(hrs, 50)))
+                        if show_band:
+                            hist_p20_hr.append(float(np.percentile(hrs, 20)))
+                            hist_p80_hr.append(float(np.percentile(hrs, 80)))
+                        else:
+                            hist_p20_hr.append(None)
+                            hist_p80_hr.append(None)
                     else:
                         hist_median_hr.append(None)
                         hist_p20_hr.append(None)
@@ -1788,17 +1811,22 @@ class ChartGenerator:
                 ))
                 
                 # 填充区域：历史P20 vs P80心率区间
-                fig.add_trace(go.Scatter(
-                    x=hist_x + hist_x[::-1],
-                    y=[v if v is not None else 0 for v in hist_p20_hr] +
-                      [v if v is not None else 0 for v in hist_p80_hr[::-1]],
-                    fill='toself',
-                    fillcolor='rgba(255, 107, 107, 0.15)',
-                    line=dict(color='rgba(255,255,255,0)'),
-                    name='历史P20-P80区间',
-                    hoverinfo='skip',
-                    showlegend=True,
-                ))
+                # 样本 <8 时降级不画区间；剔除无数据公里，避免阴影掉到 0
+                if show_band:
+                    band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
+                            if a is not None and b is not None]
+                    if band:
+                        bx = [p[0] for p in band]
+                        fig.add_trace(go.Scatter(
+                            x=bx + bx[::-1],
+                            y=[p[1] for p in band] + [p[2] for p in reversed(band)],
+                            fill='toself',
+                            fillcolor='rgba(255, 107, 107, 0.15)',
+                            line=dict(color='rgba(255,255,255,0)'),
+                            name='历史P20-P80区间',
+                            hoverinfo='skip',
+                            showlegend=True,
+                        ))
             
             # Y 轴范围：取实际数据的 ±5%
             all_hr_values = [h for h in hr_values if h is not None and h > 0]
