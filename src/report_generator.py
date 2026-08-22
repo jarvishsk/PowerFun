@@ -15,22 +15,9 @@ import numpy as np
 import logging
 
 from src.config import INSIGHTS_CONFIG
+from src.utils import load_version
 
-
-def _load_version() -> str:
-    """从 VERSION 文件读取版本号"""
-    try:
-        version_path = Path(__file__).resolve().parent.parent / 'VERSION'
-        return version_path.read_text().strip()
-    except Exception:
-        return '3.0'
-
-
-def _safe_color(color) -> str:
-    """颜色值 XSS 白名单校验：只允许 #RRGGBB 格式"""
-    if re.match(r'^#[0-9a-fA-F]{6}$', str(color)):
-        return str(color)
-    return '#999999'
+TITLE_MAX_LEN = 25
 
 try:
     from jinja2 import Environment, BaseLoader, select_autoescape
@@ -78,9 +65,11 @@ class ReportGenerator:
             z1_count = len(df[df['hr_zone'] == 'Z1-有氧基础'])
             total_count = len(df)
             z1_pct = z1_count / total_count if total_count > 0 else 0
+            ideal_low = cfg['z1_low_pct'] * 100
+            ideal_high = cfg['z1_high_pct'] * 100
             if z1_pct < cfg['z1_low_pct']:
                 insights.append({'type': 'warning', 'icon': '⚠️', 'title': '有氧基础训练不足',
-                    'message': f'Z1有氧基础训练占比仅 {z1_pct*100:.1f}%，建议增加轻松跑比例，夯实有氧基础。理想比例为30-40%。'})
+                    'message': f'Z1有氧基础训练占比仅 {z1_pct*100:.1f}%，建议增加轻松跑比例，夯实有氧基础。理想比例为{ideal_low:.0f}-{ideal_high:.0f}%。'})
             elif z1_pct > cfg['z1_high_pct']:
                 insights.append({'type': 'info', 'icon': '✅', 'title': '有氧基础扎实',
                     'message': f'Z1有氧基础训练占比 {z1_pct*100:.1f}%，有氧基础训练充足。'})
@@ -147,7 +136,7 @@ class ReportGenerator:
         for idx, row in df.iterrows():
             record = {
                 'date': row['date'].strftime('%Y-%m-%d') if pd.notna(row.get('date')) else '--',
-                'title': (row.get('title') or '--')[:25],  # 截断为最多25个字符
+                'title': (row.get('title') or '--')[:TITLE_MAX_LEN],  # 截断为最多25个字符
                 'category': row.get('category_name') or '--',
                 'category_color': row.get('category_color', '#999'),
                 'distance': f"{row['distance']:.2f}" if pd.notna(row.get('distance')) else '--',
@@ -247,7 +236,7 @@ class ReportGenerator:
             pace_m=pace_m, pace_s=pace_s,
             has_training_effect=has_training_effect,
             has_power=has_power,
-            version=_load_version(),
+            version=load_version(),
         )
 
     def _get_html_template(self) -> str:

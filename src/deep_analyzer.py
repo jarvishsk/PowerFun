@@ -12,6 +12,7 @@ import pandas as pd
 
 from src.config import DEFAULT_CONFIG, HR_ZONE_PERCENTAGES
 from src.classifier import HeartRateClassifier
+from src.utils import format_pace_chinese
 
 logger = logging.getLogger("PowerFun.deep_analyzer")
 
@@ -132,14 +133,18 @@ class DeepRunAnalyzer:
         # 使用 HR_ZONE_PERCENTAGES 定义（Karvonen HRR 法固定百分比）
         HRR = max_hr - resting_hr
         result = {}
+        prev_high = None
         for zone_key, zone_info in HR_ZONE_PERCENTAGES.items():
             min_hr = int(resting_hr + HRR * zone_info['min_pct'])
             max_hr_val = int(resting_hr + HRR * zone_info['max_pct'])
+            if prev_high is not None and min_hr <= prev_high:
+                min_hr = prev_high + 1
             result[zone_key] = {
                 'label': zone_info['name'],
                 'min_hr': min_hr,
                 'max_hr': max_hr_val
             }
+            prev_high = max_hr_val
         return result
     
     def _extract_raw_data(self, row: pd.Series) -> dict:
@@ -1304,11 +1309,7 @@ class LLMReportGenerator:
     
     def _format_pace(self, pace_seconds: float) -> str:
         """将配速秒数转为 X分X秒/KM 格式"""
-        if pace_seconds <= 0:
-            return "--"
-        mins = int(pace_seconds // 60)
-        secs = int(pace_seconds % 60)
-        return f"{mins}分{secs:02d}秒/KM"
+        return format_pace_chinese(pace_seconds)
     
     def _format_lap_data(self, laps: dict) -> str:
         """格式化分圈数据为 LLM Prompt 文本段落"""
@@ -1335,9 +1336,9 @@ class LLMReportGenerator:
             power = f"{lap.get('avg_power', 0):.0f}W" if lap.get('avg_power') else '--'
             hist = history_median[i] if i < len(history_median) else {}
             hist_pace = self._format_pace(hist.get('pace_sec', 0)) if hist.get('pace_sec', 0) > 0 else '--'
-            hist_p20_pace = self._format_pace(history_p20_pace[i]) if i < len(history_p20_pace) else '--'
-            hist_p80_pace = self._format_pace(history_p80_pace[i]) if i < len(history_p80_pace) else '--'
-            lines.append(f'| {lap_num}KM | {pace} | {hr} | {power} | {hist_pace} | {hist_p20_pace} | {hist_p80_pace} |')
+            hist_p20_pace_str = self._format_pace(history_p20_pace[i]) if i < len(history_p20_pace) else '--'
+            hist_p80_pace_str = self._format_pace(history_p80_pace[i]) if i < len(history_p80_pace) else '--'
+            lines.append(f'| {lap_num}KM | {pace} | {hr} | {power} | {hist_pace} | {hist_p20_pace_str} | {hist_p80_pace_str} |')
         
         # 提示 LLM 解读分圈表现
         lines.append('')

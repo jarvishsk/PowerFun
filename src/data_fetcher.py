@@ -22,7 +22,7 @@ import httpx
 import pandas as pd
 import numpy as np
 
-from src.config import GARMIN_API, DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG
 
 logger = logging.getLogger(__name__)
 

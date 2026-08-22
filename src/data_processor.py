@@ -10,7 +10,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.config import FIELD_MAPPING, EXTRA_FIELDS
+from src.config import DEFAULT_CONFIG, FIELD_MAPPING, EXTRA_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -527,12 +527,7 @@ class DataProcessor:
         if missing_pace_count > 0:
             logger.warning(f"{missing_pace_count} 条记录的 pace_min_per_km 为空（可能为异常数据），将跳过这些记录。")
 
-        # 配速 (min/km) — 如果还没有的话，从 distance/duration_min 反推（仅作为兜底）
-        if "pace_min_per_km" not in df.columns and "distance" in df.columns and "duration_min" in df.columns:
-            df["pace_min_per_km"] = df.apply(
-                lambda r: r["distance"] / r["duration_min"]
-                if r["duration_min"] and r["distance"] and r["duration_min"] > 0
-                else None, axis=1)
+        # 注：此处不再保留 distance/duration_min 反推兜底；该段代码在上方 raise 之后不可达，且当前流程依赖 API 返回配速。
 
         # 日期相关派生
         if "date" in df.columns:
@@ -593,15 +588,18 @@ class DataProcessor:
 
         # 距离合理性检查
         if "distance" in df.columns:
-            outliers = df[df["distance"] > 200]  # 超过 200km 异常
+            max_dist = DEFAULT_CONFIG.get('max_reasonable_distance_km', 200)
+            outliers = df[df["distance"] > max_dist]
             if not outliers.empty:
-                issues["distance"] = f"{len(outliers)} 条记录距离 > 200km，可能异常"
+                issues["distance"] = f"{len(outliers)} 条记录距离 > {max_dist}km，可能异常"
 
         # 心率合理性检查
         if "avg_hr" in df.columns:
-            outliers = df[(df["avg_hr"] > 220) | (df["avg_hr"] < 40)]
+            min_hr = DEFAULT_CONFIG.get('min_reasonable_hr', 40)
+            max_hr = DEFAULT_CONFIG.get('max_reasonable_hr', 220)
+            outliers = df[(df["avg_hr"] > max_hr) | (df["avg_hr"] < min_hr)]
             if not outliers.empty:
-                issues["avg_hr"] = f"{len(outliers)} 条记录心率异常"
+                issues["avg_hr"] = f"{len(outliers)} 条记录心率异常（<{min_hr} 或 >{max_hr}）"
 
         return issues
 

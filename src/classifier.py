@@ -93,13 +93,20 @@ class HeartRateClassifier:
         self._recalculate_zones()
     
     def _recalculate_zones(self):
-        """根据个性化心率参数重新计算区间"""
+        """根据个性化心率参数重新计算区间
+
+        为避免 int() 截断导致相邻区间边界重叠，非首个区间的下限在上限基础上加 1，
+        保证区间连续且不重叠，同时保持与现状一致的边界分类（原 lower-zone-wins）。
+        """
+        prev_high = None
         for zone_id, zone_info in self.ZONES.items():
             low_pct, high_pct = zone_info['percent']
-            zone_info['range'] = (
-                int(self.hr_rest + self.hrr * low_pct),
-                int(self.hr_rest + self.hrr * high_pct)
-            )
+            low = int(self.hr_rest + self.hrr * low_pct)
+            high = int(self.hr_rest + self.hrr * high_pct)
+            if prev_high is not None and low <= prev_high:
+                low = prev_high + 1
+            zone_info['range'] = (low, high)
+            prev_high = high
     
     def classify(self, avg_hr: Optional[int]) -> Tuple[str, str]:
         """
@@ -338,24 +345,31 @@ class RunClassifier:
         distance = row.get('distance', 0)
         title = row.get('title', '')
         avg_hr = row.get('avg_hr', None)
-        
+
+        # 从配置读取阈值
+        full_marathon_km = DEFAULT_CONFIG.get('full_marathon_distance_km', 40)
+        half_marathon_km = DEFAULT_CONFIG.get('half_marathon_distance_km', 21)
+        lsd_threshold_km = DEFAULT_CONFIG.get('lsd_distance_threshold_km', 20)
+        regular_threshold_km = DEFAULT_CONFIG.get('regular_run_distance_threshold_km', 5)
+        short_threshold_km = DEFAULT_CONFIG.get('short_run_distance_threshold_km', 2)
+
         # 第一层：比赛识别
         if self.is_race(title):
-            if distance >= 40:
+            if distance >= full_marathon_km:
                 return 'full_marathon'
-            elif distance >= 21:
+            elif distance >= half_marathon_km:
                 return 'half_marathon'
             else:
                 return 'race_event'
-        
-        # 第二层：LSD长距离（距离≥20km）
-        if distance >= 20:
+
+        # 第二层：LSD长距离
+        if distance >= lsd_threshold_km:
             return 'lsd'
-        
+
         # 第三层：日常训练（按心率细分）
-        if distance >= 5:
+        if distance >= regular_threshold_km:
             hr_zone, _ = self.hr_classifier.classify(avg_hr)
-            
+
             if 'Z1' in hr_zone:
                 return 'easy_run'
             elif 'Z2' in hr_zone:
@@ -366,9 +380,9 @@ class RunClassifier:
                 return 'intensity_run'
             else:
                 return 'aerobic_run'  # 默认
-        
+
         # 第四层：短距离训练
-        if distance >= 2:
+        if distance >= short_threshold_km:
             return 'short_run'
         
         # 第五层：异常数据

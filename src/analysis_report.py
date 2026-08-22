@@ -10,17 +10,10 @@ from typing import Optional
 from jinja2 import Template, Environment, BaseLoader
 
 from src.config import ZONE_COLORS as _ZONE_COLORS
+from src.utils import load_version, format_pace_chinese
 
 logger = logging.getLogger("PowerFun.analysis_report")
 
-
-def _load_version() -> str:
-    """从 VERSION 文件读取版本号"""
-    try:
-        version_path = Path(__file__).resolve().parent.parent / 'VERSION'
-        return version_path.read_text().strip()
-    except Exception:
-        return '3.0'
 
 # 创建共享 Environment
 _env = Environment(loader=BaseLoader())
@@ -39,7 +32,6 @@ def signed(val: float) -> str:
 
 def markdown_to_html(md_text: str) -> str:
     """将 LLM 输出的 Markdown 转为 HTML，支持标题、加粗、列表、分割线"""
-    import re
     if not md_text:
         return ""
     # XSS 过滤
@@ -97,7 +89,7 @@ def truncate_text(text, max_len):
     return text[:max_len] if text else ''
 
 def format_pace(secs):
-    return f"{int(secs//60)}分{int(secs%60):02d}秒/KM" if secs else "--"
+    return format_pace_chinese(secs)
 
 def fmt2(val):
     """格式化数字为保留两位小数，0 也显示（如 0.40）"""
@@ -106,12 +98,6 @@ def fmt2(val):
     except (ValueError, TypeError):
         return str(val)
 
-def bracket_color(diff, good_is_low):
-    return '#dc3545' if (diff < 0) == good_is_low else '#28a745'
-
-def bracket_text_color(diff, good_is_low, verdict=''):
-    return '#17a2b8' if verdict == '持平' else ('#dc3545' if (diff < 0) == good_is_low else '#28a745')
-
 # 注册所有过滤器和全局函数
 _env.filters['trend_class'] = trend_class
 _env.filters['signed'] = signed
@@ -119,9 +105,6 @@ _env.filters['markdown_to_html'] = markdown_to_html
 _env.filters['truncate_text'] = truncate_text
 _env.filters['format_pace'] = format_pace
 _env.filters['fmt2'] = fmt2
-_env.filters['bracket_color'] = bracket_color
-_env.globals['bracket_color'] = bracket_color
-_env.globals['bracket_text_color'] = bracket_text_color
 _env.globals['trend_class'] = trend_class
 
 # HTML 模板
@@ -637,7 +620,7 @@ class AnalysisReportGenerator:
             'pa_hr': pa_hr,
             'pa_hr_history': pa_hr_history,
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'version': _load_version(),
+            'version': load_version(),
             'model_name': model_name,
         }
         

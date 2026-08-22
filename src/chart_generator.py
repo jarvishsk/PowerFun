@@ -13,6 +13,7 @@ import logging
 import json
 
 from src.config import ZONE_COLORS as _ZONE_COLORS
+from src.utils import format_pace_mmss
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,7 @@ class ChartGenerator:
 
     def _format_pace(self, seconds) -> str:
         """将秒数转换为分:秒格式"""
-        if seconds is None:
-            return "--:--"
-        minutes = int(seconds) // 60
-        secs = int(seconds) % 60
-        return f"{minutes}:{secs:02d}"
+        return format_pace_mmss(seconds)
 
     def _get_recent_months(self, df: pd.DataFrame, months: int = 12) -> pd.DataFrame:
         """获取最近N个月的数据"""

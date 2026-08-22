@@ -105,7 +105,7 @@ EXTRA_FIELDS = [
     'normalized_power',   # 标准化功率 (NP)
     'ground_contact_time', # 触地时间 (ms)
     'start_lat',          # 起点纬度
-    'start_lon',          # 起点经度,
+    'start_lon',          # 起点经度
     'aerobic_training_effect',   # 有氧训练效果
     'anaerobic_training_effect', # 无氧训练效果
     'training_effect_label',     # 训练效果文字
@@ -152,15 +152,30 @@ DEFAULT_CONFIG = {
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时
     'page_size': 100,             # Garmin API 分页大小
     'default_date_range_days': 30,
-    'hr_zone_method': 'hrr',        # 心率区间计算方法: Garmin 原生数据与本地计算均使用 Karvonen HRR（心率储备法）
     'icloud_deep_analysis_dir': str(Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'RUN'),
     # 心率参数
     'max_hr': USER_CONFIG.get('max_hr'),             # 默认最大心率（老板实测）
     'resting_hr': USER_CONFIG.get('resting_hr'),          # 默认静息心率
     # 过滤阈值
     'max_distance_km': 50,     # 单次跑步最大距离过滤阈值
+    'excluded_title_keywords': ['间歇跑'],  # 标题过滤关键词
     # 深析参数
     'deep_analysis_max_runs': 5,  # 对比分析取最近 N 次同类型
+    'deep_lap_history_n': 100,    # 深析历史分圈样本上限
+    # 数据校验阈值
+    'max_reasonable_distance_km': 200,
+    'min_reasonable_hr': 40,
+    'max_reasonable_hr': 220,
+    # 跑分类阈值
+    'full_marathon_distance_km': 40,
+    'half_marathon_distance_km': 21,
+    'lsd_distance_threshold_km': 20,
+    'regular_run_distance_threshold_km': 5,
+    'short_run_distance_threshold_km': 2,
+    # 分圈拉取参数
+    'fetch_laps_request_interval_sec': 2,
+    'fetch_laps_save_batch_laps': 50,
+    'fetch_laps_batch_size': 10,
 }
 
 # ============================================================
@@ -174,16 +189,6 @@ INSIGHTS_CONFIG = {
     'monthly_volume_change_threshold': 20.0,  # 跑量环比变化阈值（%）
     'rest_gap_days': 7,         # 训练空窗期判定天数
     'z5_overload_pct': 0.20,    # Z5 占比过高阈值
-}
-
-# Garmin API 端点 (China 区域)
-GARMIN_API = {
-    'base_url': 'https://connect.garmin.cn',
-    'sso_url': 'https://sso.garmin.cn/sso',
-    'modern_url': 'https://connect.garmin.cn/modern',
-    'activities': '/modern/proxy/activitylist-service/activities',
-    'activity_details': '/modern/proxy/activity-service/activity',
-    'user_summary': '/modern/proxy/userprofile-service/user-profile',
 }
 
 # ============================================================

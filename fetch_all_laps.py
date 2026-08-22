@@ -24,6 +24,10 @@ if not token_path.exists():
 garth.resume(str(token_path))
 logger.info(f"✅ 已加载 token, 用户: {garth.client.username}")
 
+REQUEST_INTERVAL_SEC = 2
+SAVE_BATCH_LAPS = 50
+BATCH_SIZE = 10
+
 # 读取已处理的活动 ID
 parquet_path = Path(DEFAULT_CONFIG['report_dir']).expanduser() / "running_data.parquet"
 df = pd.read_parquet(parquet_path)
@@ -47,6 +51,7 @@ if existing_ids:
     logger.info(f"📋 还需拉取: {len(activity_ids)} 条")
 
 def fetch_lap_data(activity_id: int) -> list:
+    global success_count, fail_count, no_lap_count
     try:
         response = garth.connectapi(f"/activity-service/activity/{activity_id}/laps")
         if not response or not isinstance(response, dict):
@@ -99,7 +104,6 @@ def save_laps(laps: list):
 success_count = 0
 fail_count = 0
 no_lap_count = 0
-batch_size = 10
 batch_laps = []
 
 for i, aid in enumerate(activity_ids, 1):
@@ -114,14 +118,14 @@ for i, aid in enumerate(activity_ids, 1):
         no_lap_count += 1
         logger.info(f"  ⏭️ 无分圈数据")
     
-    # 每 10 条保存一次
-    if len(batch_laps) >= batch_size * 5 or i == len(activity_ids):
+    # 每批保存一次
+    if len(batch_laps) >= SAVE_BATCH_LAPS or i == len(activity_ids):
         if batch_laps:
             save_laps(batch_laps)
             batch_laps = []
     
-    # 频率控制：每 2 秒一次
+    # 频率控制
     if i < len(activity_ids):
-        time.sleep(2)
+        time.sleep(REQUEST_INTERVAL_SEC)
 
 logger.info(f"✅ 分圈数据拉取完成: 成功 {success_count} 条, 无数据 {no_lap_count} 条, 失败 {fail_count} 条")
