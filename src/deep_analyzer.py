@@ -1295,6 +1295,11 @@ class LLMReportGenerator:
                 verdict = '符合预期'
             parts.append(f"预期配速：{self._format_pace(exp['expected_pace_sec'])}，实际{self._format_pace(exp['actual_pace_sec'])}，{verdict}")
         
+        # 明确两个关键指标的统计口径，避免 AI 点评自相矛盾
+        parts.append(
+            "【指标口径说明】预期配速=同类型历史配速中位数；历史排名=按跑步经济性 (m/h)/bpm 的百分位。"
+        )
+        
         return '\n'.join(parts) if parts else '（历史数据不足）'
     
     def _format_pace(self, pace_seconds: float) -> str:
@@ -1439,7 +1444,12 @@ class LLMReportGenerator:
         
         # 从df_all中查询基准数据（基准温度15-20°C，基准功率区间±2.5W）
         if hasattr(self, 'df_all') and self.df_all is not None:
-            df = self.df_all
+            df = self.df_all.copy()
+            # 与 _get_long_term_baseline 保持一致：归一化分类（全马/半马/赛事 → race）
+            df['_category_norm'] = df['category'].apply(
+                lambda c: 'race' if c in ('full_marathon', 'half_marathon', 'race_event') else c
+            )
+            category_norm = 'race' if category in ('full_marathon', 'half_marathon', 'race_event') else category
             
             # 计算功率区间边界
             power_lower = ref_power - 2.5
@@ -1447,7 +1457,7 @@ class LLMReportGenerator:
             
             # 查询基准温度（15-20°C）下相同分类、相似功率的平均心率
             base_df = df[
-                (df['category'] == category) &
+                (df['_category_norm'] == category_norm) &
                 (df['avg_power'] >= power_lower) &
                 (df['avg_power'] <= power_upper) &
                 ((df['min_temperature'] + df['max_temperature']) / 2 >= 15) &
@@ -1459,7 +1469,7 @@ class LLMReportGenerator:
             
             # 查询高温区间（25-30°C）下相同分类、相似功率的平均心率
             hot_df = df[
-                (df['category'] == category) &
+                (df['_category_norm'] == category_norm) &
                 (df['avg_power'] >= power_lower) &
                 (df['avg_power'] <= power_upper) &
                 ((df['min_temperature'] + df['max_temperature']) / 2 >= 25) &

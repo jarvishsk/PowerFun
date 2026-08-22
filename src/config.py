@@ -163,6 +163,19 @@ DEFAULT_CONFIG = {
     'deep_analysis_max_runs': 5,  # 对比分析取最近 N 次同类型
 }
 
+# ============================================================
+# 智能训练建议阈值配置
+# ============================================================
+INSIGHTS_CONFIG = {
+    'z1_low_pct': 0.30,         # Z1 占比下限（低于此值提示有氧基础不足）
+    'z1_high_pct': 0.50,        # Z1 占比上限（高于此值认为有氧基础扎实）
+    'cadence_low_threshold': 170,   # 步频偏低阈值（spm）
+    'cadence_high_threshold': 180,  # 步频优秀阈值（spm）
+    'monthly_volume_change_threshold': 20.0,  # 跑量环比变化阈值（%）
+    'rest_gap_days': 7,         # 训练空窗期判定天数
+    'z5_overload_pct': 0.20,    # Z5 占比过高阈值
+}
+
 # Garmin API 端点 (China 区域)
 GARMIN_API = {
     'base_url': 'https://connect.garmin.cn',

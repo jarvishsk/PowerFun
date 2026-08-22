@@ -25,7 +25,7 @@ garth.resume(str(token_path))
 logger.info(f"✅ 已加载 token, 用户: {garth.client.username}")
 
 # 读取已处理的活动 ID
-parquet_path = Path.home() / "Documents" / "Run" / "running_data.parquet"
+parquet_path = Path(DEFAULT_CONFIG['report_dir']).expanduser() / "running_data.parquet"
 df = pd.read_parquet(parquet_path)
 activity_ids = df["activity_id"].dropna().astype(int).tolist()
 logger.info(f"📋 共 {len(activity_ids)} 条活动需要拉取分圈数据")

@@ -205,6 +205,17 @@ class ChartGenerator:
         tick_vals = [1] + list(range(5, max_seq + 5, 5))
         tick_texts = [str(t) for t in tick_vals]
 
+        # 根据实际配速数据动态生成 Y 轴刻度（15 秒间隔，范围向外取整到 15 的倍数）
+        pace_min = df['avg_pace_sec'].dropna().min()
+        pace_max = df['avg_pace_sec'].dropna().max()
+        # 处理空数据/异常值兜底
+        if pd.isna(pace_min) or pd.isna(pace_max):
+            pace_min, pace_max = 300, 480
+        pace_lo = int((max(pace_min - 30, 0)) // 15) * 15
+        pace_hi = int((pace_max + 30) // 15 + 1) * 15
+        pace_tick_vals = list(range(pace_lo, pace_hi + 1, 15))
+        pace_tick_texts = [self._format_pace(v) for v in pace_tick_vals]
+
         fig.update_layout(
             title=None,
             xaxis=dict(
@@ -218,8 +229,9 @@ class ChartGenerator:
                 autorange='reversed',
                 tickformat='%M:%S',
                 tickmode='array',
-                tickvals=[315, 330, 345, 360, 375, 390, 405, 420, 435, 450, 465, 480],
-                ticktext=['5:15', '5:30', '5:45', '6:00', '6:15', '6:30', '6:45', '7:00', '7:15', '7:30', '7:45', '8:00']
+                tickvals=pace_tick_vals,
+                ticktext=pace_tick_texts,
+                range=[pace_hi, pace_lo]
             ),
             **self._common_layout_style,
             yaxis2=dict(title='心率 (bpm)', range=[120, 180]),
@@ -1164,18 +1176,13 @@ class ChartGenerator:
         else:
             return {}
 
-        # 过滤异常值
-        valid = df[
-            (df['avg_hr'] >= 60) &
-            (df['pace_min_km'] >= 4) &
-            (df['pace_min_km'] <= 12) &
-            (df['avg_temperature'].notna())
-        ].copy()
+        # 过滤异常值（使用 1%~99% 分位，样本过少时不过滤）
+        df = self._filter_pace_quantile(df[df['avg_temperature'].notna()])
+        df = df[df['avg_hr'] >= 60].copy()
 
-        if len(valid) < 5:
+        if len(df) < 5:
             return {}
 
-        df = valid
         df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
 
         fig = go.Figure()
@@ -1281,12 +1288,9 @@ class ChartGenerator:
         else:
             return {}
 
-        # 过滤异常值
-        df = df[
-            (df['avg_hr'] >= 60) &
-            (df['pace_min_km'] >= 4) &
-            (df['pace_min_km'] <= 12)
-        ].copy()
+        # 过滤异常值（使用 1%~99% 分位，样本过少时不过滤）
+        df = self._filter_pace_quantile(df)
+        df = df[df['avg_hr'] >= 60].copy()
 
         if df.empty:
             return {}
@@ -1419,16 +1423,6 @@ class ChartGenerator:
 
         # 创建完整温度范围（-5 到 35）
         full_range = list(range(-5, 36))
-        
-        # 颜色：根据温度变化
-        colors = []
-        for t in full_range:
-            if t <= 15:
-                colors.append('rgba(100, 180, 255, 0.7)')  # 冷蓝
-            elif t <= 25:
-                colors.append('rgba(65, 105, 225, 0.8)')   # 适中蓝
-            else:
-                colors.append('rgba(231, 76, 60, 0.8)')    # 热红
 
         fig = go.Figure()
 
@@ -1569,6 +1563,18 @@ class ChartGenerator:
         lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
         filtered = [v for v in values if lo <= v <= hi]
         return filtered if filtered else values
+
+    def _filter_pace_quantile(self, df: pd.DataFrame, min_samples: int = 10) -> pd.DataFrame:
+        """按 1%~99% 分位过滤配速异常值；样本 < min_samples 时保守不过滤。"""
+        if len(df) < min_samples:
+            return df
+        pace_min = df['pace_min_km'].quantile(0.01)
+        pace_max = df['pace_min_km'].quantile(0.99)
+        if pd.isna(pace_min) or pd.isna(pace_max) or pace_min >= pace_max:
+            return df
+        filtered = df[(df['pace_min_km'] >= pace_min) & (df['pace_min_km'] <= pace_max)].copy()
+        # 保守兜底：若全部被过滤则回退原样本
+        return filtered if not filtered.empty else df
 
     def _compute_total_km(self, lap_data: list[dict]) -> int:
         """根据分圈数据计算总距离，向下取整为整数KM"""

@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from src.config import DEFAULT_CONFIG
+
 try:
     from playwright.sync_api import sync_playwright
     HAS_PLAYWRIGHT = True
@@ -14,11 +16,11 @@ logger = logging.getLogger("PowerFun.pdf_generator")
 
 
 # ============================================================
-# 路径常量
+# 路径常量（report_dir / icloud_deep_analysis_dir 均从 config 读取）
 # ============================================================
-REPORT_DIR = Path.home() / "Documents" / "Run"
+REPORT_DIR = Path(DEFAULT_CONFIG['report_dir']).expanduser()
 DEEP_REPORT_DIR = REPORT_DIR / "PowerFun_Reports"
-ICLOUD_RUN_DIR = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "RUN"
+ICLOUD_RUN_DIR = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir']).expanduser()
 
 COMPREHENSIVE_HTML = REPORT_DIR / "PowerFun.html"
 COMPREHENSIVE_PDF = ICLOUD_RUN_DIR / "综合分析报告.PDF"

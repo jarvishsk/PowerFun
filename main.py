@@ -375,7 +375,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     from src.config import LLM_CONFIG
     model_name = LLM_CONFIG.get('display_name', 'AI模型')
     
-    if args.dry_run:
+    if dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
         return
 
@@ -422,7 +422,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             _generate_deep_report(df, target_run, analysis_dir, output_dir,
                                   max_hr=max_hr, resting_hr=resting_hr,
                                   fetcher=deep_fetcher,
-                                  user_note=args.user_note)
+                                  user_note=user_note)
             if not fetcher:
                 deep_fetcher.close()
         else:
@@ -460,9 +460,6 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                 shared_fetcher.close()
 
             logger.info(f"✅ 批量深度分析完成: 共生成 {count} 条新报告")
-
-    # 深析模式不再生成综合报告 PDF（只生成深析报告）
-    skip_pdf = bool(deep_analyze or deep_analyze_all)
 
     # ----------------------------------------------------------
     # Step 7: 生成深度分析报告（正常模式：最近一次跑步）
@@ -646,7 +643,6 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
 def main():
     """主流程"""
-    global args  # _run_reports 引用
     args = parse_args()
 
     fetcher = None

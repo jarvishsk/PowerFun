@@ -14,6 +14,8 @@ import pandas as pd
 import numpy as np
 import logging
 
+from src.config import INSIGHTS_CONFIG
+
 
 def _load_version() -> str:
     """从 VERSION 文件读取版本号"""
@@ -68,17 +70,18 @@ class ReportGenerator:
         )
 
     def generate_insights(self, df: pd.DataFrame, stats: Dict) -> List[Dict]:
-        """生成智能训练建议"""
+        """生成智能训练建议（阈值从 INSIGHTS_CONFIG 读取）"""
         insights = []
+        cfg = INSIGHTS_CONFIG
 
         if 'hr_zone' in df.columns:
             z1_count = len(df[df['hr_zone'] == 'Z1-有氧基础'])
             total_count = len(df)
             z1_pct = z1_count / total_count if total_count > 0 else 0
-            if z1_pct < 0.3:
+            if z1_pct < cfg['z1_low_pct']:
                 insights.append({'type': 'warning', 'icon': '⚠️', 'title': '有氧基础训练不足',
                     'message': f'Z1有氧基础训练占比仅 {z1_pct*100:.1f}%，建议增加轻松跑比例，夯实有氧基础。理想比例为30-40%。'})
-            elif z1_pct > 0.5:
+            elif z1_pct > cfg['z1_high_pct']:
                 insights.append({'type': 'info', 'icon': '✅', 'title': '有氧基础扎实',
                     'message': f'Z1有氧基础训练占比 {z1_pct*100:.1f}%，有氧基础训练充足。'})
 
@@ -86,16 +89,16 @@ class ReportGenerator:
             df_sorted = df.sort_values('date')
             last_run = df_sorted['date'].max()
             gap = (datetime.now() - last_run).days
-            if gap > 7:
+            if gap > cfg['rest_gap_days']:
                 insights.append({'type': 'warning', 'icon': '⏰', 'title': '训练空窗期',
                     'message': f'最近 {gap} 天无跑步记录，注意保持训练连续性。'})
 
         if 'cadence' in df.columns and df['cadence'].notna().any():
             avg_cad = df['cadence'].mean()
-            if avg_cad < 170:
+            if avg_cad < cfg['cadence_low_threshold']:
                 insights.append({'type': 'tip', 'icon': '👟', 'title': '步频偏低',
-                    'message': f'平均步频 {avg_cad:.0f} spm，建议通过节拍器训练提升至180spm。'})
-            elif avg_cad >= 180:
+                    'message': f"平均步频 {avg_cad:.0f} spm，建议通过节拍器训练提升至{cfg['cadence_high_threshold']}spm。"})
+            elif avg_cad >= cfg['cadence_high_threshold']:
                 insights.append({'type': 'info', 'icon': '✅', 'title': '步频优秀',
                     'message': f'平均步频 {avg_cad:.0f} spm，步频控制良好。'})
 
@@ -107,7 +110,7 @@ class ReportGenerator:
 
         if 'hr_zone' in df.columns:
             z5_count = len(df[df['hr_zone'] == 'Z5-最大强度'])
-            if z5_count > len(df) * 0.2:
+            if z5_count > len(df) * cfg['z5_overload_pct']:
                 insights.append({'type': 'warning', 'icon': '🔥', 'title': '高强度训练过多',
                     'message': f'Z5最大强度训练占比过高（{z5_count/len(df)*100:.1f}%），注意控制强度。'})
 
@@ -117,10 +120,11 @@ class ReportGenerator:
                 latest = monthly.iloc[-1]
                 prev = monthly.iloc[-2]
                 change = (latest - prev) / prev * 100 if prev > 0 else 0
-                if change > 20:
+                threshold = cfg['monthly_volume_change_threshold']
+                if change > threshold:
                     insights.append({'type': 'warning', 'icon': '📈', 'title': '跑量增长过快',
                         'message': f'本月跑量较上月增长 {change:.1f}%，注意循序渐进。'})
-                elif change < -20:
+                elif change < -threshold:
                     insights.append({'type': 'tip', 'icon': '📉', 'title': '跑量下降',
                         'message': f'本月跑量较上月下降 {abs(change):.1f}%，注意保持训练量。'})
 
@@ -205,19 +209,18 @@ class ReportGenerator:
         has_training_effect = bool(charts.get('training_effect'))
         has_power = bool(charts.get('power_distribution'))
 
-        # 使用Jinja2渲染
-        if HAS_JINJA2:
-            html_content = self._render_jinja2(
-                df, charts_json, stats, insights, table_data, charts,
-                current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                has_training_effect, has_power
+        # jinja2 是事实依赖，缺失时给出明确错误
+        if not HAS_JINJA2:
+            raise RuntimeError(
+                "PowerFun 报告生成依赖 jinja2 模板引擎。"
+                "请运行：pip install jinja2，然后重试。"
             )
-        else:
-            html_content = self._render_fallback(
-                df, charts_json, stats, insights, table_data, charts,
-                current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                has_training_effect, has_power, _load_version()
-            )
+
+        html_content = self._render_jinja2(
+            df, charts_json, stats, insights, table_data, charts,
+            current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
+            has_training_effect, has_power
+        )
 
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -246,60 +249,6 @@ class ReportGenerator:
             has_power=has_power,
             version=_load_version(),
         )
-
-    def _render_fallback(self, df, charts_json, stats, insights, table_data, charts,
-                         current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                         has_training_effect, has_power, version='3.0') -> str:
-        """不使用Jinja2的渲染（直接字符串替换）"""
-        # 构建HTML各部分（对所有用户数据进行html.escape防XSS）
-        insights_html = '\n'.join([
-            f'<div class="insight-card {html.escape(i["type"])}">'
-            f'<div class="icon">{html.escape(i["icon"])}</div>'
-            f'<div class="title">{html.escape(i["title"])}</div>'
-            f'<div class="message">{html.escape(i["message"])}</div></div>'
-            for i in insights
-        ])
-
-        table_html = '\n'.join([
-            f'<tr><td>{html.escape(r["date"])}</td><td>{html.escape(r["title"])}</td>'
-            f'<td><span class="category-badge" style="background-color:{_safe_color(r.get("category_color", "#999"))}">{html.escape(r["category"])}</span></td>'
-            f'<td>{html.escape(r["distance"])}</td><td>{html.escape(r["pace"])}</td><td>{html.escape(r["hr"])}</td>'
-            f'<td>{html.escape(r["power"])}</td><td>{html.escape(r["cadence"])}</td></tr>'
-            for r in table_data
-        ])
-
-        training_effect_section = ''
-        if has_training_effect:
-            training_effect_section = '''
-        <div class="section">
-            <h2 class="section-title"><span class="icon">🎯</span>训练效果趋势</h2>
-            <div id="chart-training-effect" class="chart-container"></div>
-        </div>'''
-
-        power_section = ''
-        if has_power:
-            power_section = '''
-        <div class="section">
-            <h2 class="section-title"><span class="icon">⚡</span>功率分布</h2>
-            <div id="chart-power" class="chart-container"></div>
-        </div>'''
-
-        training_effect_script = ''
-        if has_training_effect:
-            training_effect_script = "if (training_effect && training_effect.data) { Plotly.newPlot('chart-training-effect', training_effect.data, training_effect.layout, {responsive: true}); }"
-
-        power_script = ''
-        if has_power:
-            power_script = "if (power_distribution && power_distribution.data) { Plotly.newPlot('chart-power', power_distribution.data, power_distribution.layout, {responsive: true}); }"
-
-        html = self._get_html_template().replace('{{ insights_html }}', insights_html)
-        html = html.replace('{{ table_html }}', table_html)
-        html = html.replace('{{ training_effect_section }}', training_effect_section)
-        html = html.replace('{{ power_section }}', power_section)
-        html = html.replace('{{ training_effect_script }}', training_effect_script)
-        html = html.replace('{{ power_script }}', power_script)
-
-        return html
 
     def _get_html_template(self) -> str:
         """返回HTML模板字符串（Jinja2语法）"""
