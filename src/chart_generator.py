@@ -1622,9 +1622,13 @@ class ChartGenerator:
             ))
             
             # 需求 3：历史数据处理——同一 KM 序号，只使用有数据的记录计算
-            # IQR 异常值过滤 + numpy 真分位数插值；样本 <8 时降级只显示中位线
+            # IQR 异常值过滤 + numpy 真分位数插值；
+            # 新阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
+            #         当前公里样本 >=20 才绘制该公里阴影，
+            #         当前公里样本 >=5 才绘制中位线，
+            #         当前公里样本 >=10 才启用 IQR 过滤。
             hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
-            show_band = bool(recent_laps) and len(recent_laps) >= 8
+            category_enough = len(recent_laps) >= 30
             if recent_laps:
                 for lap_idx in range(1, total_km + 1):
                     paces = []
@@ -1634,11 +1638,16 @@ class ChartGenerator:
                                 p = rl.get('pace_sec_per_km', 0)
                                 if p > 0:
                                     paces.append(p)
-                    
+
                     if paces:
-                        paces = self._iqr_filter(paces)
-                        hist_median_pace.append(float(np.percentile(paces, 50)))
-                        if show_band:
+                        raw_count = len(paces)
+                        if raw_count >= 10:
+                            paces = self._iqr_filter(paces)
+                        if len(paces) >= 5:
+                            hist_median_pace.append(float(np.percentile(paces, 50)))
+                        else:
+                            hist_median_pace.append(None)
+                        if category_enough and len(paces) >= 20:
                             hist_p20_pace.append(float(np.percentile(paces, 20)))
                             hist_p80_pace.append(float(np.percentile(paces, 80)))
                         else:
@@ -1663,8 +1672,8 @@ class ChartGenerator:
                 ))
                 
                 # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
-                # 样本 <8 时降级不画区间；剔除无数据公里，避免阴影掉到 0
-                if show_band:
+                # 仅当分类历史样本充足且当前公里样本 >=20 时绘制；剔除无数据公里，避免阴影掉到 0
+                if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
                             if a is not None and b is not None]
                     if band:
@@ -1771,9 +1780,13 @@ class ChartGenerator:
             ))
             
             # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
-            # IQR 异常值过滤 + numpy 真分位数插值；样本 <8 时降级只显示中位线
+            # IQR 异常值过滤 + numpy 真分位数插值；
+            # 新阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
+            #         当前公里样本 >=20 才绘制该公里阴影，
+            #         当前公里样本 >=5 才绘制中位线，
+            #         当前公里样本 >=10 才启用 IQR 过滤。
             hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
-            show_band = bool(recent_laps) and len(recent_laps) >= 8
+            category_enough = len(recent_laps) >= 30
             if recent_laps:
                 for lap_idx in range(1, total_km + 1):
                     hrs = []
@@ -1783,11 +1796,16 @@ class ChartGenerator:
                                 h = rl.get('avg_hr')
                                 if h is not None and h > 0:
                                     hrs.append(h)
-                    
+
                     if hrs:
-                        hrs = self._iqr_filter(hrs)
-                        hist_median_hr.append(float(np.percentile(hrs, 50)))
-                        if show_band:
+                        raw_count = len(hrs)
+                        if raw_count >= 10:
+                            hrs = self._iqr_filter(hrs)
+                        if len(hrs) >= 5:
+                            hist_median_hr.append(float(np.percentile(hrs, 50)))
+                        else:
+                            hist_median_hr.append(None)
+                        if category_enough and len(hrs) >= 20:
                             hist_p20_hr.append(float(np.percentile(hrs, 20)))
                             hist_p80_hr.append(float(np.percentile(hrs, 80)))
                         else:
@@ -1811,8 +1829,8 @@ class ChartGenerator:
                 ))
                 
                 # 填充区域：历史P20 vs P80心率区间
-                # 样本 <8 时降级不画区间；剔除无数据公里，避免阴影掉到 0
-                if show_band:
+                # 仅当分类历史样本充足且当前公里样本 >=20 时绘制；剔除无数据公里，避免阴影掉到 0
+                if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
                             if a is not None and b is not None]
                     if band:

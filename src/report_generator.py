@@ -154,12 +154,18 @@ class ReportGenerator:
                 'vo2_max': f"{int(row['vO2_max'])}" if pd.notna(row.get('vO2_max')) else '--',
                 'activity_id': row.get('activity_id', 'unknown'),
             }
-            # 检查是否有对应的深析报告
+            # 检查是否有对应的深析报告（新格式带 activity_id 优先，旧格式日期兜底）
             if analysis_dir:
                 date_str = record['date'].replace('-', '')  # YYYYMMDD
-                expected_file = f"run_analysis_{date_str}.html"
-                if expected_file in available_links:
-                    record['deep_analysis_link'] = expected_file
+                activity_id = record.get('activity_id')
+                candidates = []
+                if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+                    candidates.append(f"run_analysis_{date_str}_{activity_id}.html")
+                candidates.append(f"run_analysis_{date_str}.html")
+                for expected_file in candidates:
+                    if expected_file in available_links:
+                        record['deep_analysis_link'] = expected_file
+                        break
 
             records.append(record)
 
@@ -493,6 +499,40 @@ class ReportGenerator:
             </div>
         </div>
 
+        {% set temp_hr_scatter_json = charts_json.get('temp_hr_scatter', 'null') %}
+        {% if temp_hr_scatter_json and temp_hr_scatter_json != 'null' %}
+        <div class="section">
+            <h2 class="section-title"><span class="icon">🌡️</span>气温-心率效率趋势</h2>
+            <div id="chart-temp-hr-scatter" class="chart-container"></div>
+        </div>
+        {% endif %}
+
+        {% set beats_per_km_json = charts_json.get('beats_per_km', 'null') %}
+        {% if beats_per_km_json and beats_per_km_json != 'null' %}
+        <div class="section">
+            <h2 class="section-title"><span class="icon">💓</span>心率成本趋势（beats/km）</h2>
+            <div id="chart-beats-per-km" class="chart-container"></div>
+        </div>
+        {% endif %}
+
+        <div class="charts-row">
+            {% set speed_hr_scatter_json = charts_json.get('speed_hr_scatter', 'null') %}
+            {% if speed_hr_scatter_json and speed_hr_scatter_json != 'null' %}
+            <div class="section">
+                <h2 class="section-title"><span class="icon">🏃</span>速度-心率散点（颜色=气温）</h2>
+                <div id="chart-speed-hr-scatter" class="chart-container"></div>
+            </div>
+            {% endif %}
+
+            {% set speed_hr_temp_curves_json = charts_json.get('speed_hr_temp_curves', 'null') %}
+            {% if speed_hr_temp_curves_json and speed_hr_temp_curves_json != 'null' %}
+            <div class="section">
+                <h2 class="section-title"><span class="icon">🌡️</span>速度-心率温度分层曲线</h2>
+                <div id="chart-speed-hr-temp-curves" class="chart-container"></div>
+            </div>
+            {% endif %}
+        </div>
+
         <div class="section">
             <h2 class="section-title"><span class="icon">📋</span>详细数据记录</h2>
             <div class="table-container">
@@ -549,6 +589,10 @@ class ReportGenerator:
         const hr_distribution = {{ charts_json.get('hr_distribution', 'null') | safe }};
         const training_effect = {{ charts_json.get('training_effect', 'null') | safe }};
         const power_distribution = {{ charts_json.get('power_distribution', 'null') | safe }};
+        const temp_hr_scatter = {{ charts_json.get('temp_hr_scatter', 'null') | safe }};
+        const beats_per_km = {{ charts_json.get('beats_per_km', 'null') | safe }};
+        const speed_hr_scatter = {{ charts_json.get('speed_hr_scatter', 'null') | safe }};
+        const speed_hr_temp_curves = {{ charts_json.get('speed_hr_temp_curves', 'null') | safe }};
 
         if (pace_hr_trend && pace_hr_trend.data) {
             Plotly.newPlot('chart-pace-hr', pace_hr_trend.data, pace_hr_trend.layout, {responsive: true});
@@ -637,6 +681,19 @@ class ReportGenerator:
             Plotly.newPlot('chart-power', power_distribution.data, power_distribution.layout, {responsive: true});
         }
         {% endif %}
+
+        if (temp_hr_scatter && temp_hr_scatter.data) {
+            Plotly.newPlot('chart-temp-hr-scatter', temp_hr_scatter.data, temp_hr_scatter.layout, {responsive: true});
+        }
+        if (beats_per_km && beats_per_km.data) {
+            Plotly.newPlot('chart-beats-per-km', beats_per_km.data, beats_per_km.layout, {responsive: true});
+        }
+        if (speed_hr_scatter && speed_hr_scatter.data) {
+            Plotly.newPlot('chart-speed-hr-scatter', speed_hr_scatter.data, speed_hr_scatter.layout, {responsive: true});
+        }
+        if (speed_hr_temp_curves && speed_hr_temp_curves.data) {
+            Plotly.newPlot('chart-speed-hr-temp-curves', speed_hr_temp_curves.data, speed_hr_temp_curves.layout, {responsive: true});
+        }
 
         $(document).ready(function() {
             $('#data-table').DataTable({

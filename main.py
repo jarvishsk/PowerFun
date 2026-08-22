@@ -190,6 +190,7 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
 
     # 加载分圈数据
     activity_id = target_run.get('activity_id')
+    target_ts = pd.Timestamp(target_run.get('date'))  # 目标日期，用于排除未来数据污染
     lap_data = {}
     recent_laps = []
     lap_pace_chart_html = ''
@@ -203,15 +204,18 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
         
         if current_laps:
             lap_count = len(current_laps)
-            # 加载前 N 次同类型的分圈数据（P20-P80 百分位统计需要足够样本，N=10）
+            # 加载前 N 次同类型的分圈数据（P20-P80 百分位统计需要足够样本）
+            # 图表层会按分类总样本和每公里样本阈值过滤，N 取足够大以保证 per-km 样本量
             category = target_run.get('category', '')
-            N = 10
+            N = 100
             if category and 'category' in df.columns:
                 df_same = df[df['category'] == category]
             else:
                 df_same = df
             # 排除本次
             df_same = df_same[df_same['activity_id'] != activity_id]
+            # 排除目标日期之后的所有数据，同时允许同日期更早的记录作为历史基线
+            df_same = df_same[df_same['date'] <= target_ts]
             # 按日期排序，取最近 N 次
             df_same = df_same.sort_values('date', ascending=False).head(N)
             
@@ -252,7 +256,8 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
     pa_hr_history = []
     pa_hr_history_data = df[
         (df['distance'] >= 3.0) &
-        (df['activity_id'] != activity_id)  # 排除当前跑步
+        (df['activity_id'] != activity_id) &  # 排除当前跑步
+        (df['date'] <= target_ts)  # 排除目标日期之后的数据，保留同日期更早记录
     ].copy()
     
     # 需要计算Pa:Hr历史趋势（如果当前跑步>=3km且有lap数据）
@@ -300,10 +305,14 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                                     model_name=actual_model)
 
     date_str = target_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-    # 复制到 iCloud（先删旧文件再复制）
+    activity_id = target_run.get('activity_id')
+    # 复制到 iCloud（先删旧文件再复制），文件名同步 activity_id 后缀
     icloud_dir = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir'])
     icloud_dir.mkdir(parents=True, exist_ok=True)
-    icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
+    if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+        icloud_path = icloud_dir / f"深度分析报告_{date_str}_{activity_id}.html"
+    else:
+        icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
     import shutil
     icloud_path.unlink(missing_ok=True)
     shutil.copy2(html_path, icloud_path)
@@ -356,7 +365,8 @@ def _print_summary(stats: dict):
 
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
-                 max_hr: int, resting_hr: int, user_note: str = None) -> None:
+                 max_hr: int, resting_hr: int, user_note: str = None,
+                 fetcher=None) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
@@ -407,9 +417,14 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             target_run = matched.iloc[0]
             logger.info(f"🎯 深度分析: {target_run.get('title', '')} ({target_run.get('date', '')})")
 
+            # 在深度分析分支创建可复用 fetcher（如主流程未提供）
+            deep_fetcher = fetcher or GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
             _generate_deep_report(df, target_run, analysis_dir, output_dir,
                                   max_hr=max_hr, resting_hr=resting_hr,
+                                  fetcher=deep_fetcher,
                                   user_note=args.user_note)
+            if not fetcher:
+                deep_fetcher.close()
         else:
             # --deep-analyze-all: 遍历所有记录
             logger.info(f"📊 批量深度分析: {len(df)} 条记录...")
@@ -419,18 +434,30 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                     if f.startswith('run_analysis_') and f.endswith('.html'):
                         existing_files.add(f)
 
+            # 创建可复用的 fetcher，供分圈缓存读取使用
+            shared_fetcher = fetcher or GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
+
             count = 0
             for idx, row in df.iterrows():
                 date_str = row.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-                expected_html = f"run_analysis_{date_str}.html"
+                activity_id = row.get('activity_id')
+                if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+                    expected_html = f"run_analysis_{date_str}_{activity_id}.html"
+                else:
+                    expected_html = f"run_analysis_{date_str}.html"
                 if expected_html in existing_files:
                     logger.info(f"⏭️ 跳过已有报告: {expected_html}")
                     continue
 
                 logger.info(f"📝 分析: {row.get('title', '')} ({row.get('date', '')})")
                 _generate_deep_report(df, row, analysis_dir, output_dir,
-                                      max_hr=max_hr, resting_hr=resting_hr)
+                                      max_hr=max_hr, resting_hr=resting_hr,
+                                      fetcher=shared_fetcher)
                 count += 1
+
+            # 批量深析完成后关闭复用的 fetcher
+            if not fetcher:
+                shared_fetcher.close()
 
             logger.info(f"✅ 批量深度分析完成: 共生成 {count} 条新报告")
 
@@ -450,6 +477,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
         latest_run = df.iloc[-1]  # DataFrame 已按日期排序
         activity_id = latest_run.get('activity_id')
+        target_ts = pd.Timestamp(latest_run.get('date'))  # 用于过滤未来数据（正常模式即为最新日期）
         lap_data = {}
         recent_laps = []
         lap_pace_chart_html = ''
@@ -463,13 +491,16 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
 
             if current_laps:
                 lap_count = len(current_laps)
+                # 加载前 N 次同类型的分圈数据（P20-P80 百分位统计需要足够样本）
+                # 图表层会按分类总样本和每公里样本阈值过滤，N 取足够大以保证 per-km 样本量
                 category = latest_run.get('category', '')
-                N = 10  # 同类型历史样本上限（P20-P80 百分位统计需要足够样本）
+                N = 100
                 if category and 'category' in df.columns:
                     df_same = df[df['category'] == category]
                 else:
                     df_same = df
                 df_same = df_same[df_same['activity_id'] != activity_id]
+                df_same = df_same[df_same['date'] <= target_ts]
                 df_same = df_same.sort_values('date', ascending=False).head(N)
 
                 for _, row in df_same.iterrows():
@@ -492,7 +523,6 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                     logger.warning(f"分圈图表生成失败: {e}")
                     lap_pace_chart_html = ''
                     lap_hr_chart_html = ''
-            temp_fetcher.close()
 
         analyzer = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
                                    max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data,
@@ -503,7 +533,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
         pa_hr_history = []
         pa_hr_history_data = df[
             (df['distance'] >= 3.0) &
-            (df['activity_id'] != latest_run.get('activity_id'))  # 排除当前跑步
+            (df['activity_id'] != latest_run.get('activity_id')) &  # 排除当前跑步
+            (df['date'] <= target_ts)  # 排除目标日期之后的数据，保留同日期更早记录
         ].copy()
         
         # 需要计算Pa:Hr历史趋势（如果当前跑步>=3km且有lap数据）
@@ -537,6 +568,10 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             pa_hr_history_chart = chart_gen.create_pa_hr_trend_chart(pa_hr_history_list)
         else:
             pa_hr_history_chart = None
+        
+        # 在 Pa:Hr 历史计算完成后关闭 fetcher（避免在关闭后访问 lap 缓存）
+        if activity_id:
+            temp_fetcher.close()
 
         llm_gen = LLMReportGenerator(df_all=df)
         llm_report, actual_model = llm_gen.generate(analysis_data, user_note=user_note)
@@ -551,10 +586,14 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                                              model_name=actual_model)
 
         date_str = latest_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-        # 复制到 iCloud
+        activity_id = latest_run.get('activity_id')
+        # 复制到 iCloud，文件名同步 activity_id 后缀
         icloud_dir = Path(DEFAULT_CONFIG['icloud_deep_analysis_dir'])
         icloud_dir.mkdir(parents=True, exist_ok=True)
-        icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
+        if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+            icloud_path = icloud_dir / f"深度分析报告_{date_str}_{activity_id}.html"
+        else:
+            icloud_path = icloud_dir / f"深度分析报告_{date_str}.html"
         import shutil
         icloud_path.unlink(missing_ok=True)
         shutil.copy2(html_path, icloud_path)
@@ -667,7 +706,8 @@ def _main_inner(args, fetcher):
         stats = _get_summary_stats(df)
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
-                     args.max_hr, args.resting_hr, user_note=args.user_note)
+                     args.max_hr, args.resting_hr, user_note=args.user_note,
+                     fetcher=fetcher)
         return
 
     # ==========================================================
@@ -824,7 +864,8 @@ def _main_inner(args, fetcher):
     stats = _get_summary_stats(df)
     _run_reports(df, output_dir, stats, args.dry_run,
                  args.deep_analyze, args.deep_analyze_all,
-                 args.max_hr, args.resting_hr, user_note=args.user_note)
+                 args.max_hr, args.resting_hr, user_note=args.user_note,
+                 fetcher=fetcher)
 
 
 if __name__ == "__main__":

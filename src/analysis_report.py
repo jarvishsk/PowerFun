@@ -153,6 +153,7 @@ ANALYSIS_HTML_TEMPLATE = """
         .eval-good { background: #cce5ff; color: #004085; }
         .eval-normal { background: #fff3cd; color: #856404; }
         .eval-poor { background: #f8d7da; color: #721c24; }
+        .eval-missing { background: #e9ecef; color: #999999; }
         .trend-up { color: #28a745; }
         .trend-down { color: #dc3545; }
         .trend-flat { color: #6c757d; }
@@ -287,19 +288,6 @@ ANALYSIS_HTML_TEMPLATE = """
     {% endif %}
     {% endif %}
     
-    {% if pa_hr_history %}
-    <script>
-    (function(){
-        try {
-            var data = {{ pa_hr_history | safe }};
-            if (data && data.data && data.data.length > 0) {
-                Plotly.newPlot('pa-hr-trend-chart', data.data, data.layout, {responsive: true});
-            }
-        } catch(e) { console.error('pa-hr trend chart render error:', e); }
-    })();
-    </script>
-    {% endif %}
-
     {% if pa_hr %}
     <div class="section">
         <h2>🔄 有氧解耦分析（Pa:Hr）</h2>
@@ -367,6 +355,19 @@ ANALYSIS_HTML_TEMPLATE = """
         
         <!-- 历史趋势图 -->
         <div id="pa-hr-trend-chart" style="border-radius:8px;overflow:hidden;margin-top:16px;"></div>
+
+        {% if pa_hr_history %}
+        <script>
+        (function(){
+            try {
+                var data = {{ pa_hr_history | safe }};
+                if (data && data.data && data.data.length > 0) {
+                    Plotly.newPlot('pa-hr-trend-chart', data.data, data.layout, {responsive: true});
+                }
+            } catch(e) { console.error('pa-hr trend chart render error:', e); }
+        })();
+        </script>
+        {% endif %}
     </div>
     {% endif %}
     
@@ -644,20 +645,23 @@ class AnalysisReportGenerator:
         template = _env.from_string(ANALYSIS_HTML_TEMPLATE)
         html = template.render(**context)
         
-        # 文件名：run_analysis_{YYYYMMDD}.html
+        # 文件名：run_analysis_{YYYYMMDD}_{activity_id}.html（避免同一天多次跑步覆盖）
         date_str = raw.get('date', '').replace('-', '')  # Convert YYYY-MM-DD to YYYYMMDD
+        activity_id = raw.get('activity_id')
         if not date_str:
             # 如果无法获取日期，则使用activity_id或当前时间
-            activity_id = raw.get('activity_id', datetime.now().strftime('%Y%m%d%H%M'))
-            date_str = activity_id
-        html_path = self.output_dir / f"run_analysis_{date_str}.html"
+            date_str = activity_id or datetime.now().strftime('%Y%m%d%H%M')
+        if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+            html_path = self.output_dir / f"run_analysis_{date_str}_{activity_id}.html"
+        else:
+            html_path = self.output_dir / f"run_analysis_{date_str}.html"
         html_path.write_text(html, encoding='utf-8')
         
         logger.info(f"深度分析报告已生成: {html_path}")
         return str(html_path)
     
     def _eval_class(self, eval_text: str) -> str:
-        mapping = {'优秀': 'excellent', '良好': 'good', '一般': 'normal'}
+        mapping = {'优秀': 'excellent', '良好': 'good', '一般': 'normal', '暂无数据': 'missing'}
         return mapping.get(eval_text, 'poor')
 
 

@@ -509,16 +509,20 @@ class GarminDataFetcher:
                 duration = lap.get("duration", 0)
                 # 配速：秒/公里
                 pace = duration / (distance / 1000.0) if distance > 0 else 0
+
+                def _val_or_nan(val):
+                    return val if val is not None else np.nan
+
                 laps.append({
                     "activity_id": activity_id,
                     "lap_index": lap.get("lapIndex", 0),
                     "distance_m": distance,
                     "duration_sec": duration,
                     "pace_sec_per_km": round(pace, 2),
-                    "avg_hr": lap.get("averageHR") or np.nan,
-                    "max_hr": lap.get("maxHR") or np.nan,
-                    "avg_power": lap.get("averagePower") or np.nan,
-                    "cadence": lap.get("averageRunCadence") or np.nan,
+                    "avg_hr": _val_or_nan(lap.get("averageHR")),
+                    "max_hr": _val_or_nan(lap.get("maxHR")),
+                    "avg_power": _val_or_nan(lap.get("averagePower")),
+                    "cadence": _val_or_nan(lap.get("averageRunCadence")),
                     "elevation_gain_m": lap.get("elevationGain", 0),
                 })
             logger.info(f"分圈数据: activity {activity_id}, 共 {len(laps)} 圈")

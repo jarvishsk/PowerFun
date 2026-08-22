@@ -74,6 +74,7 @@ def fetch_lap_data(activity_id: int) -> list:
         return laps
     except Exception as e:
         logger.warning(f"获取分圈数据失败 (activity {activity_id}): {e}")
+        fail_count += 1
         return []
 
 def save_laps(laps: list):

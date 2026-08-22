@@ -299,24 +299,17 @@ class DeepRunAnalyzer:
         
         if self.target_date is not None:
             target_ts = pd.Timestamp(self.target_date)
-            df_same = df_same[df_same['date'] < target_ts]
+            df_same = df_same[df_same['date'] <= target_ts]
         
         # 温区分桶匹配（三档：<15℃ / 15-25℃ / >25℃）
-        def get_temp_bucket(row_data):
-            mid = ((row_data.get('min_temperature', 0) or 0) + (row_data.get('max_temperature', 0) or 0)) / 2
-            if mid < 15:
-                return 'cool'
-            elif mid <= 25:
-                return 'mild'
-            else:
-                return 'hot'
-        
-        target_bucket = get_temp_bucket(row)
-        if 'min_temperature' in df_same.columns and target_bucket:
+        target_bucket = self._get_temp_bucket(row)
+        if 'min_temperature' in df_same.columns and target_bucket is not None:
             df_same = df_same.copy()
             df_same['_temp_bucket'] = df_same.apply(
-                lambda r: get_temp_bucket(r), axis=1
+                lambda r: self._get_temp_bucket(r), axis=1
             )
+            # 同时过滤掉无温区的记录，避免把缺失温度误判为冷天
+            df_same = df_same[df_same['_temp_bucket'].notna()]
             df_same = df_same[df_same['_temp_bucket'] == target_bucket]
         
         # 90天滚动窗口（取本次日期前90天内的数据）
@@ -334,11 +327,14 @@ class DeepRunAnalyzer:
                 df_same = df[df['_category_norm'] == category_norm] if category_norm and '_category_norm' in df.columns else df
                 if activity_id:
                     df_same = df_same[df_same['activity_id'] != activity_id]
-                df_same = df_same[df_same['date'] < target_ts]
+                df_same = df_same[df_same['date'] <= target_ts]
                 df_same = df_same[df_same['date'] >= cutoff_ts]
                 df_same = df_same.copy()
-                df_same['_temp_bucket'] = df_same.apply(lambda r: get_temp_bucket(r), axis=1)
-                df_same = df_same[df_same['_temp_bucket'] == target_bucket]
+                df_same['_temp_bucket'] = df_same.apply(lambda r: self._get_temp_bucket(r), axis=1)
+                # 无温区记录不进入基线
+                df_same = df_same[df_same['_temp_bucket'].notna()]
+                if target_bucket is not None:
+                    df_same = df_same[df_same['_temp_bucket'] == target_bucket]
                 df_same = df_same.sort_values('date', ascending=False)
         
         # 如果180天仍不足（<3次），放宽温区限制（同类型不限温区，上限365天）
@@ -348,7 +344,7 @@ class DeepRunAnalyzer:
             df_same = df[df['_category_norm'] == category_norm] if category_norm and '_category_norm' in df.columns else df
             if activity_id:
                 df_same = df_same[df_same['activity_id'] != activity_id]
-            df_same = df_same[df_same['date'] < target_ts]
+            df_same = df_same[df_same['date'] <= target_ts]
             df_same = df_same[df_same['date'] >= cutoff_ts]
             df_same = df_same.sort_values('date', ascending=False)
         
@@ -366,6 +362,8 @@ class DeepRunAnalyzer:
         dist = row.get('distance', 0)
         dist_tolerance = dist * 0.2  # ±20% 距离容忍
         df_near = df_same[(df_same['distance'] >= dist * 0.8) & (df_same['distance'] <= dist * 1.2)]
+        # 距离相近样本不足时降级为同温区样本
+        df_compare = df_near if len(df_near) >= 3 else df_same
         
         # 统计工具函数
         def stats(series):
@@ -384,8 +382,8 @@ class DeepRunAnalyzer:
         }
         
         # 心率变化
-        if 'avg_hr' in df_same.columns and df_same['avg_hr'].notna().any():
-            s = df_same['avg_hr'].dropna()
+        if 'avg_hr' in df_compare.columns and df_compare['avg_hr'].notna().any():
+            s = df_compare['avg_hr'].dropna()
             st = stats(s)
             curr_hr = row.get('avg_hr', 0)
             hr_diff = curr_hr - st['median'] if st['median'] > 0 else 0
@@ -399,8 +397,8 @@ class DeepRunAnalyzer:
             }
         
         # 配速变化
-        if 'avg_pace_sec' in df_same.columns and df_same['avg_pace_sec'].notna().any():
-            s = df_same['avg_pace_sec'].dropna()
+        if 'avg_pace_sec' in df_compare.columns and df_compare['avg_pace_sec'].notna().any():
+            s = df_compare['avg_pace_sec'].dropna()
             st = stats(s)
             curr_pace = row.get('avg_pace_sec', 0)
             pace_diff = curr_pace - st['median']
@@ -414,8 +412,8 @@ class DeepRunAnalyzer:
             }
         
         # 功率变化
-        if 'avg_power' in df_same.columns and df_same['avg_power'].notna().any():
-            s = df_same['avg_power'].dropna()
+        if 'avg_power' in df_compare.columns and df_compare['avg_power'].notna().any():
+            s = df_compare['avg_power'].dropna()
             st = stats(s)
             curr_power = row.get('avg_power', 0)
             power_diff = curr_power - st['median']
@@ -458,9 +456,9 @@ class DeepRunAnalyzer:
             }
         
         # 效率：时速(m/h)÷心率(bpm)，值越大越好
-        if ('avg_hr' in df_same.columns and 'avg_pace_sec' in df_same.columns 
-            and df_same['avg_hr'].notna().any() and df_same['avg_pace_sec'].notna().any()):
-            df_valid = df_same[(df_same['avg_hr'] > 0) & (df_same['avg_pace_sec'] > 0)].copy()
+        if ('avg_hr' in df_compare.columns and 'avg_pace_sec' in df_compare.columns
+            and df_compare['avg_hr'].notna().any() and df_compare['avg_pace_sec'].notna().any()):
+            df_valid = df_compare[(df_compare['avg_hr'] > 0) & (df_compare['avg_pace_sec'] > 0)].copy()
             if len(df_valid) > 0:
                 # 效率 = 时速(m/h) ÷ 心率(bpm) = (3600×1000/配速秒) ÷ 心率 = 3600000 / (配速秒 × 心率)
                 df_valid['efficiency'] = 3600000.0 / (df_valid['avg_pace_sec'] * df_valid['avg_hr'])
@@ -596,12 +594,10 @@ class DeepRunAnalyzer:
                         if h is not None and not pd.isna(h) and h > 0:
                             hrs.append(h)
             
-            median_pace = sorted(paces)[len(paces) // 2] if paces else 0
+            median_pace = float(np.percentile(paces, 50)) if paces else 0
             if paces:
-                sorted_p = sorted(paces)
-                n = len(sorted_p)
-                p20 = sorted_p[max(0, 2 * n // 10)]
-                p80 = sorted_p[min(n - 1, 8 * n // 10)]
+                p20 = float(np.percentile(paces, 20))
+                p80 = float(np.percentile(paces, 80))
             else:
                 p20 = 0
                 p80 = 0
@@ -627,7 +623,11 @@ class DeepRunAnalyzer:
 
     def _get_temp_bucket(self, row_data):
         """获取温区桶（内部辅助方法）"""
-        mid = ((row_data.get('min_temperature', 0) or 0) + (row_data.get('max_temperature', 0) or 0)) / 2
+        min_temp = row_data.get('min_temperature')
+        max_temp = row_data.get('max_temperature')
+        if min_temp is None or max_temp is None or pd.isna(min_temp) or pd.isna(max_temp):
+            return None
+        mid = (float(min_temp) + float(max_temp)) / 2
         if mid < 15:
             return 'cool'
         elif mid <= 25:
@@ -654,13 +654,17 @@ class DeepRunAnalyzer:
         # 时间窗口：前180天
         cutoff_ts = target_ts - pd.Timedelta(days=180)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
-        df_filtered = df_filtered[df_filtered['date'] < target_ts]
+        df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选
+        # 温区筛选（缺失温区不进入基线）
         df_filtered['_temp_bucket'] = df_filtered.apply(
             lambda r: self._get_temp_bucket(r), axis=1
         )
-        df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
+        if temp_bucket is not None:
+            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        else:
+            df_same_temp = df_filtered
         
         # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
         if len(df_same_temp) < 3:
@@ -692,13 +696,17 @@ class DeepRunAnalyzer:
         # 时间窗口：前30天
         cutoff_ts = target_ts - pd.Timedelta(days=30)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
-        df_filtered = df_filtered[df_filtered['date'] < target_ts]
+        df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选
+        # 温区筛选（缺失温区不进入基线）
         df_filtered['_temp_bucket'] = df_filtered.apply(
             lambda r: self._get_temp_bucket(r), axis=1
         )
-        df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
+        if temp_bucket is not None:
+            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        else:
+            df_same_temp = df_filtered
         
         # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
         if len(df_same_temp) < 3:
@@ -741,10 +749,15 @@ class DeepRunAnalyzer:
         pace_verdict = '更快' if pace_diff < -5 else ('更慢' if pace_diff > 5 else '持平')
         eff_verdict = '更经济' if eff_diff > 3 else ('更费力' if eff_diff < -3 else '持平')
         
+        if temp_bucket is None or len(df_same_temp) > len(df_filtered[df_filtered['_temp_bucket'] == temp_bucket]):
+            temp_bucket_label = 'all'
+        else:
+            temp_bucket_label = temp_bucket
+
         return {
             'window_days': 30,
             'sample_size': len(df_same_temp),
-            'temp_bucket': 'all' if len(df_same_temp) > len(df_filtered[df_filtered['_temp_bucket'] == temp_bucket]) else temp_bucket,
+            'temp_bucket': temp_bucket_label,
             'hr': {'median': hr_median},
             'pace_median': pace_median,
             'efficiency_median': efficiency_median,
@@ -773,13 +786,17 @@ class DeepRunAnalyzer:
         # 时间窗口：前180天
         cutoff_ts = target_ts - pd.Timedelta(days=180)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
-        df_filtered = df_filtered[df_filtered['date'] < target_ts]
+        df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选
+        # 温区筛选（缺失温区不进入基线）
         df_filtered['_temp_bucket'] = df_filtered.apply(
             lambda r: self._get_temp_bucket(r), axis=1
         )
-        df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
+        if temp_bucket is not None:
+            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
+        else:
+            df_same_temp = df_filtered
         
         # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
         if len(df_same_temp) < 3:
@@ -847,37 +864,41 @@ class DeepRunAnalyzer:
         efficiency_slope = float(efficiency_slope)  # 效率单位/月
         
         # 综合判定 + 理由
-        reasons = []
+        neg_signals = []
+        pos_signals = []
         if hr_slope < -1:
-            reasons.append(f'心率月降{abs(hr_slope):.1f}bpm')
+            pos_signals.append(f'心率月降{abs(hr_slope):.1f}bpm')
         elif hr_slope > 1:
-            reasons.append(f'心率月升{hr_slope:.1f}bpm')
+            neg_signals.append(f'心率月升{hr_slope:.1f}bpm')
         
         if pace_slope < -2:
-            reasons.append(f'配速月升{abs(pace_slope):.1f}秒')
+            pos_signals.append(f'配速月升{abs(pace_slope):.1f}秒')
         elif pace_slope > 2:
-            reasons.append(f'配速月降{pace_slope:.1f}秒')
+            neg_signals.append(f'配速月降{pace_slope:.1f}秒')
         
         if efficiency_slope > 1:
-            reasons.append(f'效率月升{efficiency_slope:.1f}')
+            pos_signals.append(f'效率月升{efficiency_slope:.1f}')
         elif efficiency_slope < -1:
-            reasons.append(f'效率月降{abs(efficiency_slope):.1f}')
+            neg_signals.append(f'效率月降{abs(efficiency_slope):.1f}')
         
-        # verdict
+        reasons = neg_signals + pos_signals
+        
+        # verdict：正负信号兼有 → 分化；仅负向 → 退步；仅正向 → 进步；无信号 → 稳定
         if not reasons:
             verdict = '稳定'
             reason = '各项指标变化在正常范围内'
-        elif all('升' in r or '降' in r for r in reasons):
-            # 判断方向
-            neg_count = sum(1 for r in reasons if '心率月升' in r or '配速月降' in r or '效率月降' in r)
-            if neg_count > len(reasons) / 2:
-                verdict = '退步'
-            else:
-                verdict = '进步'
-            reason = '，'.join(reasons)
-        else:
+        elif neg_signals and pos_signals:
             verdict = '分化'
             reason = '，'.join(reasons)
+        elif neg_signals:
+            verdict = '退步'
+            reason = '，'.join(reasons)
+        elif pos_signals:
+            verdict = '进步'
+            reason = '，'.join(reasons)
+        else:
+            verdict = '稳定'
+            reason = '各项指标变化在正常范围内'
         
         return {
             'window_days': 180,
@@ -915,9 +936,11 @@ class DeepRunAnalyzer:
         if len(history_effs) < 5:
             return None
         
-        # 计算百分位
-        better_count = sum(1 for e in history_effs if e < curr_eff)
-        percentile_value = round(better_count / len(history_effs) * 100, 0)
+        # 计算百分位：效率越高越好。
+        # better_count 为历史效率中严格优于当前值（比当前更高）的次数。
+        # 用 (1 - better_count / n) * 100 表示当前超过多少比例的历史记录。
+        better_count = sum(1 for e in history_effs if e > curr_eff)
+        percentile_value = round((1 - better_count / len(history_effs)) * 100, 0)
         
         # 标签与实际百分位值保持一致
         if percentile_value >= 90:

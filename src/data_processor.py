@@ -21,7 +21,6 @@ class DataProcessor:
     def __init__(self):
         self.field_mapping = FIELD_MAPPING
         self.extra_fields = EXTRA_FIELDS
-        self._use_summary_extractor = False  # 用于标识是否使用 summary 提取器
 
     def process(self, raw_activities: list[dict]) -> pd.DataFrame:
         """处理原始活动数据，返回标准化 DataFrame
@@ -39,10 +38,7 @@ class DataProcessor:
 
         logger.info(f"开始处理 {len(raw_activities)} 条活动数据...")
 
-        # 检测数据格式，在开始处理前一次性确定使用哪种提取器
-        self._use_summary_extractor = any('summaryDTO' in a or ('raw_data' in a and 'summaryDTO' in a['raw_data']) for a in raw_activities)
-
-        # Step 1: 提取并映射基础字段
+        # Step 1: 提取并映射基础字段（按单条活动独立判断格式）
         records = []
         skipped = 0
         for i, activity in enumerate(raw_activities):
@@ -86,8 +82,12 @@ class DataProcessor:
         """_map_activity 的实际实现"""
         record = {}
 
-        # 根据预设的标志选择提取器
-        if self._use_summary_extractor:
+        # 按单条活动独立判断格式
+        has_summary = bool(
+            activity.get('summaryDTO') or
+            (isinstance(activity.get('raw_data'), dict) and activity['raw_data'].get('summaryDTO'))
+        )
+        if has_summary:
             # 从 summaryDTO 提取数据 (garmer 格式)
             summary = activity.get("summaryDTO", {})
             raw_data = activity.get("raw_data", {})
