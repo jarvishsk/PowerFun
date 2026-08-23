@@ -549,7 +549,7 @@ class ChartGenerator:
         # 按分类绘制散点
         # 合并全马和半马为同一个跑类
         df = df.copy()
-        df.loc[df['category'].isin(['full_marathon', 'half_marathon']), 'category'] = 'race'
+        df.loc[df['category'].isin(['full_marathon', 'half_marathon', 'race_event']), 'category'] = 'race'
 
         categories = df['category'].unique() if 'category' in df.columns else ['other']
         cat_color_map = {
