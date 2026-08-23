@@ -646,14 +646,10 @@ def main():
             sys.exit(1)
         return
 
-    try:
-        _main_inner(args, fetcher)
-    finally:
-        if fetcher is not None:
-            fetcher.close()
+    _main_inner(args)
 
 
-def _main_inner(args, fetcher):
+def _main_inner(args):
     """主流程内部逻辑"""
     output_dir = Path(args.output or DEFAULT_CONFIG["report_dir"]).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -663,6 +659,8 @@ def _main_inner(args, fetcher):
     logger.info("=" * 60)
     logger.info("🏃 PowerFun 跑步数据分析")
     logger.info("=" * 60)
+
+    fetcher = None
 
     # ==========================================================
     # 路径 A: --load-parquet（直接从 parquet 读取，报告数据源）
@@ -810,34 +808,41 @@ def _main_inner(args, fetcher):
     # ----------------------------------------------------------
     # Step 7.5: 拉取分圈数据（新增活动）
     # ----------------------------------------------------------
-    logger.info("Step 7.5/10: 拉取分圈数据...")
-    all_laps = []
-    for idx, row in df.iterrows():
-        act_id = row.get('activity_id')
-        if not act_id:
-            continue
-        # 仅拉取还没有分圈数据的活动
-        existing = fetcher._load_lap_cache(act_id)
-        if existing:
-            continue
-        laps = fetcher.fetch_lap_data(act_id)
-        if laps:
-            all_laps.extend(laps)
-    if all_laps:
-        fetcher._save_lap_cache(all_laps)
-        logger.info(f"✅ 分圈数据拉取完成: {len(all_laps)} 条记录")
+    if fetcher is None:
+        logger.info("test-data 模式，跳过分圈拉取")
     else:
-        logger.info("✅ 无新增分圈数据")
+        logger.info("Step 7.5/10: 拉取分圈数据...")
+        all_laps = []
+        for idx, row in df.iterrows():
+            act_id = row.get('activity_id')
+            if not act_id:
+                continue
+            # 仅拉取还没有分圈数据的活动
+            existing = fetcher._load_lap_cache(act_id)
+            if existing:
+                continue
+            laps = fetcher.fetch_lap_data(act_id)
+            if laps:
+                all_laps.extend(laps)
+        if all_laps:
+            fetcher._save_lap_cache(all_laps)
+            logger.info(f"✅ 分圈数据拉取完成: {len(all_laps)} 条记录")
+        else:
+            logger.info("✅ 无新增分圈数据")
 
     # ==========================================================
     # 统一报告入口：所有报告从 parquet 读取
     # ==========================================================
     df = _load_df_from_parquet(parquet_path)
     stats = _get_summary_stats(df)
-    _run_reports(df, output_dir, stats, args.dry_run,
-                 args.deep_analyze, args.deep_analyze_all,
-                 args.max_hr, args.resting_hr, user_note=args.user_note,
-                 fetcher=fetcher)
+    try:
+        _run_reports(df, output_dir, stats, args.dry_run,
+                     args.deep_analyze, args.deep_analyze_all,
+                     args.max_hr, args.resting_hr, user_note=args.user_note,
+                     fetcher=fetcher)
+    finally:
+        if fetcher is not None:
+            fetcher.close()
 
 
 if __name__ == "__main__":
