@@ -28,7 +28,7 @@ metadata:
 - 🧹 **数据清洗**: 字段映射、类型转换、异常检测
 - ❤️ **心率区间**: Karvonen HRR 法，Z1-Z5 五区间（百分比固定，不可更改）
 - ⏱️ **配速趋势**: 移动平均、趋势判断
-- 📈 **可视化**: 9个Plotly交互式图表（图例居中、心率分布等）
+- 📈 **可视化**: 13个Plotly交互式图表（图例居中、心率分布等）
 - 📄 **HTML/PDF 报告**: 综合分析报告 + 深度分析报告（含 AI 教练建议）
 
 ## 冷启动流程
@@ -48,6 +48,7 @@ ls ~/Projects/skills/PowerFun/.data/garmin_tokens/
 
 ```bash
 cd ~/Projects/skills/PowerFun
+source venv/bin/activate   # 项目 venv（Python 3.14），以下命令的 python3 均为 venv 内解释器
 ```
 
 | 场景 | 命令 |

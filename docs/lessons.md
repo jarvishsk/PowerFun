@@ -1,5 +1,9 @@
 # PowerFun 跑步数据分析 — 经验教训
 
+## 老板决策（不可推翻）
+
+- **max_hr=188 是有意的保守安排**（2026-08-23 确认）：实测高于 188 的心率很少且多为瞬时峰值，不代表实际心率上限。即使数据中出现 189-194 的记录，也不要建议上调 max_hr。
+
 ## 关键技术要点
 
 1. **Garmin.cn 字段映射**：功率 `avgPower`、步频 `averageRunningCadenceInStepsPerMinute`、垂直振幅 `avgVerticalRatio`
