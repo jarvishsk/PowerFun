@@ -1849,14 +1849,10 @@ class ChartGenerator:
                             showlegend=True,
                         ))
             
-            # Y 轴范围：取实际数据的 ±5%
+            # Y 轴范围：只按图上实际绘制的内容计算（本次曲线 + 历史中位线 + P20-P80 带），±5% 边距
             all_hr_values = [h for h in hr_values if h is not None and h > 0]
-            if recent_laps:
-                for run_laps in recent_laps:
-                    for rl in run_laps:
-                        h = rl.get('avg_hr')
-                        if h is not None and h > 0:
-                            all_hr_values.append(h)
+            for hist_vals in (hist_median_hr, hist_p20_hr, hist_p80_hr):
+                all_hr_values.extend(h for h in hist_vals if h is not None and h > 0)
             
             if all_hr_values:
                 hr_min = min(all_hr_values)
