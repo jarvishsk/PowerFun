@@ -185,8 +185,8 @@ INSIGHTS_CONFIG = {
     'z1_low_pct': 0.30,         # Z1 占比下限（低于此值提示有氧基础不足）
     'z1_high_pct': 0.50,        # Z1 占比上限（高于此值认为有氧基础扎实）
     'cadence_low_threshold': 170,   # 步频偏低阈值（spm）
-    'cadence_high_threshold': 180,  # 步频优秀阈值（spm）
-    'monthly_volume_change_threshold': 20.0,  # 跑量环比变化阈值（%）
+    'cadence_high_threshold': 180,  # 步频参考阈值（spm，目前仅用于偏低判定，不再生成空泛优秀建议）
+    'monthly_volume_change_threshold': 20.0,  # 近 4 周跑量环比变化阈值（%）
     'rest_gap_days': 7,         # 训练空窗期判定天数
     'z5_overload_pct': 0.20,    # Z5 占比过高阈值
 }

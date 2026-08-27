@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 import logging
 
-from src.config import INSIGHTS_CONFIG
+from src.config import INSIGHTS_CONFIG, HR_ZONE_PERCENTAGES, USER_CONFIG
 from src.utils import load_version
 
 TITLE_MAX_LEN = 25
@@ -57,69 +57,220 @@ class ReportGenerator:
         )
 
     def generate_insights(self, df: pd.DataFrame, stats: Dict) -> List[Dict]:
-        """生成智能训练建议（阈值从 INSIGHTS_CONFIG 读取）"""
+        """生成训练结论与下一步（基于近 4 周窗口，可自动降级到 8/12 周）"""
         insights = []
         cfg = INSIGHTS_CONFIG
 
-        if 'hr_zone' in df.columns:
-            z1_count = len(df[df['hr_zone'] == 'Z1-有氧基础'])
-            total_count = len(df)
-            z1_pct = z1_count / total_count if total_count > 0 else 0
+        if 'date' not in df.columns or df.empty:
+            insights.append({
+                'type': 'info', 'icon': '📊', 'title': '数据不足',
+                'message': '暂无有效跑步记录，无法生成训练建议。',
+                'metric': 'total_runs', 'value': 0
+            })
+            return insights
+
+        df_dates = pd.to_datetime(df['date'])
+        now = datetime.now()
+
+        # 窗口选择：优先 4 周；样本不足 3 次时降级到 8 周，仍不足降级到 12 周
+        window_days = 28
+        recent_cutoff = now - timedelta(days=window_days)
+        recent_df = df[df_dates >= recent_cutoff]
+        sample_low = False
+        if len(recent_df) < 3:
+            window_days = 56
+            recent_cutoff = now - timedelta(days=window_days)
+            recent_df = df[df_dates >= recent_cutoff]
+            sample_low = True
+            if len(recent_df) < 3:
+                window_days = 84
+                recent_cutoff = now - timedelta(days=window_days)
+                recent_df = df[df_dates >= recent_cutoff]
+                sample_low = True
+
+        window_weeks = window_days / 7
+        recent_count = len(recent_df)
+        prev_start = now - timedelta(days=window_days * 2)
+        prev_end = now - timedelta(days=window_days)
+        prev_df = df[(df_dates >= prev_start) & (df_dates < prev_end)]
+
+        if sample_low:
+            insights.append({
+                'type': 'info', 'icon': '📊', 'title': '样本说明',
+                'message': f'近 4 周跑步记录不足 3 次，已扩展至近 {window_weeks:.0f} 周，趋势仅供参考。',
+                'metric': 'window_weeks', 'value': int(window_weeks),
+                'target': '≥3 次/4周', 'action': '保持规律记录后重新评估'
+            })
+
+        # 有氧基础 / 高强度控制
+        if 'hr_zone' in df.columns and recent_count > 0:
+            z1_count = (recent_df['hr_zone'] == 'Z1-有氧基础').sum()
+            z5_count = (recent_df['hr_zone'] == 'Z5-最大强度').sum()
+            z1_pct = z1_count / recent_count
+            z5_pct = z5_count / recent_count
             ideal_low = cfg['z1_low_pct'] * 100
             ideal_high = cfg['z1_high_pct'] * 100
+
+            # 全期各月 Z1 占比中位数
+            overall_z1_median = None
+            if 'year_month' in df.columns:
+                monthly_total = df.groupby('year_month').size()
+                monthly_z1 = df[df['hr_zone'] == 'Z1-有氧基础'].groupby('year_month').size()
+                monthly_z1_pct = (monthly_z1 / monthly_total).dropna()
+                if not monthly_z1_pct.empty:
+                    overall_z1_median = monthly_z1_pct.median() * 100
+
             if z1_pct < cfg['z1_low_pct']:
-                insights.append({'type': 'warning', 'icon': '⚠️', 'title': '有氧基础训练不足',
-                    'message': f'Z1有氧基础训练占比仅 {z1_pct*100:.1f}%，建议增加轻松跑比例，夯实有氧基础。理想比例为{ideal_low:.0f}-{ideal_high:.0f}%。'})
-            elif z1_pct > cfg['z1_high_pct']:
-                insights.append({'type': 'info', 'icon': '✅', 'title': '有氧基础扎实',
-                    'message': f'Z1有氧基础训练占比 {z1_pct*100:.1f}%，有氧基础训练充足。'})
+                z1_upper = (
+                    USER_CONFIG['resting_hr']
+                    + HR_ZONE_PERCENTAGES['Z1']['max_pct']
+                    * (USER_CONFIG['max_hr'] - USER_CONFIG['resting_hr'])
+                )
+                weekly_runs = recent_count / window_weeks
+                target_easy = max(1, int(round(weekly_runs * 0.6))) if weekly_runs > 0 else 2
+                easy_range = f"{target_easy}-{target_easy + 1}" if weekly_runs >= 3 else f"{target_easy}"
+                msg = (
+                    f"近 {window_weeks:.0f} 周 Z1 占比 {z1_pct * 100:.1f}%"
+                    f"（低于 {ideal_low:.0f}% 下限"
+                )
+                if overall_z1_median is not None:
+                    msg += f"，全期中位数 {overall_z1_median:.0f}%"
+                msg += (
+                    f"）。建议下周 {easy_range} 次跑步控制心率 <{z1_upper:.0f} bpm，"
+                    f"每次 45-60 分钟，补有氧基础。"
+                )
+                insights.append({
+                    'type': 'warning', 'icon': '⚠️', 'title': '有氧基础训练不足',
+                    'message': msg,
+                    'metric': 'z1_pct', 'value': round(z1_pct * 100, 1),
+                    'target': f'{ideal_low:.0f}-{ideal_high:.0f}%',
+                    'action': f'下周安排 {easy_range} 次轻松跑，心率 <{z1_upper:.0f} bpm'
+                })
+            elif z1_pct <= cfg['z1_high_pct']:
+                insights.append({
+                    'type': 'info', 'icon': '✅', 'title': '有氧基础扎实',
+                    'message': (
+                        f"近 {window_weeks:.0f} 周 Z1 占比 {z1_pct * 100:.1f}%，"
+                        f"处于 {ideal_low:.0f}-{ideal_high:.0f}% 理想区间，有氧基础扎实。"
+                        f"可维持当前轻松跑比例。"
+                    ),
+                    'metric': 'z1_pct', 'value': round(z1_pct * 100, 1),
+                    'target': f'{ideal_low:.0f}-{ideal_high:.0f}%',
+                    'action': '保持当前轻松跑比例'
+                })
 
-        if 'date' in df.columns:
-            df_sorted = df.sort_values('date')
-            last_run = df_sorted['date'].max()
-            gap = (datetime.now() - last_run).days
-            if gap > cfg['rest_gap_days']:
-                insights.append({'type': 'warning', 'icon': '⏰', 'title': '训练空窗期',
-                    'message': f'最近 {gap} 天无跑步记录，注意保持训练连续性。'})
+            if z5_pct > cfg['z5_overload_pct']:
+                insights.append({
+                    'type': 'warning', 'icon': '🔥', 'title': '高强度训练过多',
+                    'message': (
+                        f"近 {window_weeks:.0f} 周 Z5 占比 {z5_pct * 100:.1f}%"
+                        f"（>{cfg['z5_overload_pct'] * 100:.0f}%），强度偏高。"
+                        f"建议下周最多 1 次强度课，其余压低心率。"
+                    ),
+                    'metric': 'z5_pct', 'value': round(z5_pct * 100, 1),
+                    'target': f"<{cfg['z5_overload_pct'] * 100:.0f}%",
+                    'action': '下周最多 1 次强度课，其余压低心率'
+                })
 
-        if 'cadence' in df.columns and df['cadence'].notna().any():
-            avg_cad = df['cadence'].mean()
-            if avg_cad < cfg['cadence_low_threshold']:
-                insights.append({'type': 'tip', 'icon': '👟', 'title': '步频偏低',
-                    'message': f"平均步频 {avg_cad:.0f} spm，建议通过节拍器训练提升至{cfg['cadence_high_threshold']}spm。"})
-            elif avg_cad >= cfg['cadence_high_threshold']:
-                insights.append({'type': 'info', 'icon': '✅', 'title': '步频优秀',
-                    'message': f'平均步频 {avg_cad:.0f} spm，步频控制良好。'})
+        # 训练空窗期
+        last_run = df_dates.max()
+        gap = (now - last_run).days
+        if gap > cfg['rest_gap_days']:
+            insights.append({
+                'type': 'warning', 'icon': '⏰', 'title': '训练空窗期',
+                'message': f"最近 {gap} 天无跑步记录，训练连续性受影响。建议 48 小时内安排一次 30 分钟轻松跑恢复节奏。",
+                'metric': 'rest_gap_days', 'value': int(gap),
+                'target': f"≤{cfg['rest_gap_days']} 天",
+                'action': '48 小时内安排一次 30 分钟轻松跑'
+            })
 
+        # 步频（近窗口平均；仅提示偏低，删除空泛“优秀”夸赞）
+        if 'cadence' in df.columns and recent_count > 0:
+            recent_cad = recent_df['cadence']
+            if recent_cad.notna().any():
+                avg_cad = recent_cad.mean()
+                if avg_cad < cfg['cadence_low_threshold']:
+                    target_cad = cfg['cadence_low_threshold'] + 5
+                    insights.append({
+                        'type': 'tip', 'icon': '👟', 'title': '步频偏低',
+                        'message': (
+                            f"近 {window_weeks:.0f} 周平均步频 {avg_cad:.0f} spm"
+                            f"（<{cfg['cadence_low_threshold']}），建议用 {target_cad} bpm 节拍器跑 2-3 次，"
+                            f"每次前 3 公里刻意跟拍。"
+                        ),
+                        'metric': 'avg_cadence', 'value': round(float(avg_cad), 1),
+                        'target': f"≥{cfg['cadence_low_threshold']} spm",
+                        'action': f'用 {target_cad} bpm 节拍器进行 2-3 次步频训练'
+                    })
+
+        # 比赛恢复（仅最近 14 天内完成比赛时触发，替换旧“本周期”文案）
         if 'category' in df.columns:
-            race_count = len(df[df['category'].isin(['full_marathon', 'half_marathon', 'race_event'])])
+            race_mask = df['category'].isin(['full_marathon', 'half_marathon', 'race_event'])
+            recent_race_mask = race_mask & (df_dates >= now - timedelta(days=14))
+            race_count = int(recent_race_mask.sum())
             if race_count > 0:
-                insights.append({'type': 'info', 'icon': '🏆', 'title': '比赛完成',
-                    'message': f'本周期内完成 {race_count} 场比赛，注意赛后恢复。'})
+                race_distance = (
+                    df.loc[recent_race_mask, 'distance'].sum()
+                    if 'distance' in df.columns else 0
+                )
+                if race_count == 1 and race_distance > 0:
+                    dist_text = f"{race_distance:.2f} km"
+                else:
+                    dist_text = f"共 {race_distance:.2f} km"
+                insights.append({
+                    'type': 'info', 'icon': '🏆', 'title': '比赛恢复',
+                    'message': (
+                        f"近 14 天内完成 {race_count} 场比赛（{dist_text}）。"
+                        f"本周以恢复跑为主，避免再比赛或高强度间歇。"
+                    ),
+                    'metric': 'recent_race_count', 'value': race_count,
+                    'target': '赛后 14 天内以恢复为主',
+                    'action': '本周以恢复跑为主，避免高强度间歇'
+                })
 
-        if 'hr_zone' in df.columns:
-            z5_count = len(df[df['hr_zone'] == 'Z5-最大强度'])
-            if z5_count > len(df) * cfg['z5_overload_pct']:
-                insights.append({'type': 'warning', 'icon': '🔥', 'title': '高强度训练过多',
-                    'message': f'Z5最大强度训练占比过高（{z5_count/len(df)*100:.1f}%），注意控制强度。'})
-
-        if 'year_month' in df.columns:
-            monthly = df.groupby('year_month')['distance'].sum()
-            if len(monthly) >= 2:
-                latest = monthly.iloc[-1]
-                prev = monthly.iloc[-2]
-                change = (latest - prev) / prev * 100 if prev > 0 else 0
+        # 跑量环比（近窗口 vs 前一周期的同长度窗口）
+        if 'distance' in df.columns and recent_count > 0:
+            recent_distance = recent_df['distance'].sum()
+            prev_distance = prev_df['distance'].sum() if not prev_df.empty else 0
+            if prev_distance > 0:
+                change_pct = (recent_distance - prev_distance) / prev_distance * 100
                 threshold = cfg['monthly_volume_change_threshold']
-                if change > threshold:
-                    insights.append({'type': 'warning', 'icon': '📈', 'title': '跑量增长过快',
-                        'message': f'本月跑量较上月增长 {change:.1f}%，注意循序渐进。'})
-                elif change < -threshold:
-                    insights.append({'type': 'tip', 'icon': '📉', 'title': '跑量下降',
-                        'message': f'本月跑量较上月下降 {abs(change):.1f}%，注意保持训练量。'})
+                if change_pct > threshold:
+                    target_low = prev_distance * 1.1
+                    target_high = prev_distance * 1.2
+                    insights.append({
+                        'type': 'warning', 'icon': '📈', 'title': '跑量增长过快',
+                        'message': (
+                            f"近 {window_weeks:.0f} 周跑量 {recent_distance:.1f} km，"
+                            f"环比增加 {change_pct:.1f}%（>{threshold:.0f}% 阈值）。"
+                            f"下周建议回落到 {target_low:.1f}-{target_high:.1f} km，避免受伤。"
+                        ),
+                        'metric': 'volume_change_pct', 'value': round(change_pct, 1),
+                        'target': f"±{threshold:.0f}%",
+                        'action': f'下周跑量控制在 {target_low:.1f}-{target_high:.1f} km'
+                    })
+                elif change_pct < -threshold:
+                    insights.append({
+                        'type': 'tip', 'icon': '📉', 'title': '跑量下降',
+                        'message': (
+                            f"近 {window_weeks:.0f} 周跑量 {recent_distance:.1f} km，"
+                            f"环比下降 {abs(change_pct):.1f}%（>{threshold:.0f}% 阈值）。"
+                            f"建议逐步恢复到 {prev_distance * 0.9:.1f}-{prev_distance:.1f} km。"
+                        ),
+                        'metric': 'volume_change_pct', 'value': round(change_pct, 1),
+                        'target': f"±{threshold:.0f}%",
+                        'action': f'下周跑量逐步恢复到 {prev_distance * 0.9:.1f}-{prev_distance:.1f} km'
+                    })
 
+        # 兜底
         if not insights:
-            insights.append({'type': 'info', 'icon': '✨', 'title': '训练状态良好',
-                'message': '训练数据看起来不错，继续保持！建议每周安排1-2次力量训练。'})
+            insights.append({
+                'type': 'info', 'icon': '✨', 'title': '训练状态稳定',
+                'message': f"近 {window_weeks:.0f} 周训练结构稳定，无突出风险。可继续当前计划，每 2-3 周安排一次长距离。",
+                'metric': 'window_weeks', 'value': int(window_weeks),
+                'target': '保持稳定',
+                'action': '继续当前计划，每 2-3 周安排一次长距离'
+            })
 
         return insights
 
@@ -424,19 +575,6 @@ class ReportGenerator:
         </div>
         {% endif %}
 
-        <div class="section">
-            <h2 class="section-title"><span class="icon">💡</span>智能训练建议</h2>
-            <div class="insights-grid">
-                {% for insight in insights %}
-                <div class="insight-card {{ insight['type'] }}">
-                    <div class="icon">{{ insight['icon'] }}</div>
-                    <div class="title">{{ insight['title'] }}</div>
-                    <div class="message">{{ insight['message'] }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-
         {% set temp_hr_scatter_json = charts_json.get('temp_hr_scatter', 'null') %}
         {% if temp_hr_scatter_json and temp_hr_scatter_json != 'null' %}
         <div class="section">
@@ -469,6 +607,19 @@ class ReportGenerator:
                 <div id="chart-speed-hr-temp-curves" class="chart-container"></div>
             </div>
             {% endif %}
+        </div>
+
+        <div class="section">
+            <h2 class="section-title"><span class="icon">🎯</span>训练结论与下一步</h2>
+            <div class="insights-grid">
+                {% for insight in insights %}
+                <div class="insight-card {{ insight['type'] }}">
+                    <div class="icon">{{ insight['icon'] }}</div>
+                    <div class="title">{{ insight['title'] }}</div>
+                    <div class="message">{{ insight['message'] }}</div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
 
         <div class="section">
