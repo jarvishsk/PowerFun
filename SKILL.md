@@ -107,7 +107,7 @@ python3 main.py --load-parquet --deep-analyze "2026-07-10" \
 
 ## ⚠️ LLM 故障处理
 
-深度分析报告依赖 **Kimi k3 云端 API**（`api.kimi.com/coding/v1/chat/completions`）生成教练点评，API Key 从环境变量 `KIMI_API_KEY` 读取（自动加载 `~/.openclaw/.env`）。
+深度分析报告依赖 **Kimi Code 云端 API**（`api.kimi.com/coding/v1/chat/completions`，模型 `kimi-for-coding`）生成教练点评，API Key 从环境变量 `KIMI_API_KEY` 读取（自动加载 `~/.openclaw/.env`）。
 
 **执行方式**：必须用 `exec` + `yieldMs=180000`，进程全程前台运行，不做 poll。
 

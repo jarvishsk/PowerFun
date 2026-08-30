@@ -215,20 +215,20 @@ _load_dotenv(_os.path.expanduser('~/.openclaw/.env'))
 # }
 
 LLM_CONFIG = {
-    # 模型名称（Kimi Coding，OpenAI 兼容端点）
-    'model': 'k3',
+    # 模型名称（Kimi Code，OpenAI 兼容端点）
+    'model': 'kimi-for-coding',
     # API 服务地址（Kimi Coding）
     'host': 'api.kimi.com',
     'port': None,               # 本地模型需要端口，云端可设为 None
     'path': '/coding/v1/chat/completions',
     # 本地模型用 HTTP，云端自动切换 HTTPS
     'use_http': False,          # True=HTTP, False=HTTPS
-    # 生成参数（k3 为 reasoning 模型，服务端仅允许 temperature=1）
+    # 生成参数（kimi-for-coding 仅允许 temperature=1）
     'max_tokens': 8192,
     'temperature': 1,
     # API Key：从环境变量读取（KIMI_API_KEY）
     'api_key': _os.environ.get('KIMI_API_KEY', ''),
-    'display_name': 'k3',  # 与 model 字段保持一致，footer 显示实际模型
+    'display_name': 'Kimi Code',  # 与 model 字段保持一致，footer 显示实际模型
 }
 
 # 心率区间颜色（供各模块统一使用）
