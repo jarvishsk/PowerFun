@@ -141,10 +141,10 @@ ANALYSIS_HTML_TEMPLATE = """
         .trend-down { color: #dc3545; }
         .trend-flat { color: #6c757d; }
         .finding { padding: 8px 12px; background: #f0f4ff; border-left: 3px solid #667eea; border-radius: 4px; margin: 8px 0; }
-        .llm-report { background: #fafafa; border-radius: 8px; padding: 20px; line-height: 1.8; }
-        .llm-report h2 { color: #8B0000; margin: 18px 0 10px; font-size: 22px; font-weight: 700; }
-        .llm-report h3 { color: #8B0000; margin: 16px 0 8px; font-size: 18px; font-weight: 600; }
-        .llm-report p > strong:only-child { color: #8B0000; font-size: 20px; font-weight: 700; }
+        .llm-report { background: #fafafa; border-radius: 8px; padding: 20px; line-height: 1.8; font-size: 16px; }
+        .llm-report h2 { color: #8B0000; margin: 18px 0 10px; font-size: 18px; font-weight: 700; }
+        .llm-report h3 { color: #8B0000; margin: 16px 0 8px; font-size: 16px; font-weight: 600; }
+        .llm-report strong, .llm-report p > strong:only-child { color: #8B0000; font-weight: 600; font-size: inherit; }
         .llm-report h2:first-child { margin-top: 0; }
         .llm-report h3:first-child { margin-top: 0; }
         .llm-report ul { margin: 8px 0 8px 20px; padding: 0; list-style: disc; }
