@@ -256,9 +256,9 @@ class ChartGenerator:
         monthly = df_recent.groupby('year_month')['distance'].sum().reset_index()
         monthly = monthly.sort_values('year_month')
 
-        # 转换为yy-mm格式字符串
+        # 转换为yymm紧凑格式字符串（无分隔符，防标签拥挤）
         monthly['year_month_str'] = monthly['year_month'].astype(str).apply(
-            lambda x: f"{x[2:4]}-{x[5:7]}"
+            lambda x: f"{x[2:4]}{x[5:7]}"
         )
 
         fig = go.Figure()
@@ -272,7 +272,7 @@ class ChartGenerator:
 
         fig.update_layout(
             title=None,
-            xaxis=dict(tickangle=0, title=None, type='category'),
+            xaxis=dict(tickangle=0, title=None, type='category', tickfont=dict(size=11)),
             yaxis=dict(title='跑量 (km)'),
             height=400,
             **self._common_layout_style
@@ -505,8 +505,8 @@ class ChartGenerator:
         
         pivot_df = monthly_hr
         
-        # 转换为yy-mm格式字符串
-        x_labels = [f"{str(idx)[2:4]}-{str(idx)[5:7]}" for idx in pivot_df.index]
+        # 转换为yymm紧凑格式字符串（无分隔符，防标签拥挤）
+        x_labels = [f"{str(idx)[2:4]}{str(idx)[5:7]}" for idx in pivot_df.index]
         
         fig = go.Figure()
         
@@ -522,7 +522,7 @@ class ChartGenerator:
         
         fig.update_layout(
             title=None,
-            xaxis=dict(tickangle=0, title=None, type='category'),
+            xaxis=dict(tickangle=0, title=None, type='category', tickfont=dict(size=11)),
             yaxis=dict(title='时长 (分钟)'),
             barmode='stack',
             legend_traceorder='reversed',
