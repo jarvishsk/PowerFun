@@ -294,15 +294,22 @@ class GarminDataFetcher:
             self._save_cache(all_activities)
 
         # 合并缓存数据：增量拉取 + 本地缓存
+        # 标题保护：搜索接口标题缓存滞后，缓存中的自定义标题优先于拉取到的自动标题
         cached = self._load_cache()
         if cached:
             def _get_id(a):
                 return (a.get("activity_id") or a.get("activityId") or
                         a.get("id") or a.get("activityID") or 0)
-            existing_ids = {_get_id(a) for a in all_activities if isinstance(a, dict)}
+            result_map = {_get_id(a): a for a in all_activities if isinstance(a, dict)}
             for a in cached:
-                if isinstance(a, dict) and _get_id(a) not in existing_ids:
-                    all_activities.append(a)
+                if not isinstance(a, dict):
+                    continue
+                aid = _get_id(a)
+                if aid not in result_map:
+                    result_map[aid] = a
+                elif self._title_guard_keep_cached(a, result_map[aid]):
+                    result_map[aid] = a
+            all_activities = list(result_map.values())
             logger.info(f"✅ 合并缓存: {len(all_activities)} 条")
 
         return all_activities
@@ -369,8 +376,34 @@ class GarminDataFetcher:
         with open(self._state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def _is_auto_title(title: str) -> bool:
+        """判断是否为 Garmin 自动生成的活动标题（中文区域自动标题以"跑步"结尾）
+
+        Garmin 搜索接口的标题缓存滞后：用户在 Connect 改名后，
+        搜索接口可能长期返回旧标题，而详情接口/Connect 显示新标题。
+        用此前缀规则区分自动标题与用户自定义标题。
+        """
+        if not title:
+            return True  # 空标题视为自动标题
+        return str(title).strip().endswith('跑步')
+
+    def _title_guard_keep_cached(self, cached_rec: dict, fetched_rec: dict) -> bool:
+        """标题保护：缓存是自定义标题、拉取到自动标题时，保留缓存
+
+        防 Garmin 搜索接口陈旧数据覆盖用户在 Connect 的改名。
+        其余情况（自动→自定义、自定义→自定义、自动→自动）均接受拉取数据。
+        """
+        cached_title = cached_rec.get('activityName') or ''
+        fetched_title = fetched_rec.get('activityName') or ''
+        if not cached_title:
+            return False
+        if self._is_auto_title(cached_title) or not self._is_auto_title(fetched_title):
+            return False
+        return True
+
     def _save_cache(self, activities: list[dict]) -> None:
-        """保存活动到本地缓存（增量合并）"""
+        """保存活动到本地缓存（增量合并：新增 + 同ID更新，标题保护防陈旧覆盖）"""
         # 加载已有缓存
         cached = []
         if self._activities_cache.exists():
@@ -385,14 +418,24 @@ class GarminDataFetcher:
             return (a.get("activity_id") or a.get("activityId") or
                     a.get("id") or a.get("activityID") or 0)
 
-        existing_ids = {_get_id(a) for a in cached if isinstance(a, dict)}
+        cached_map = {_get_id(a): a for a in cached if isinstance(a, dict)}
         new_count = 0
+        update_count = 0
         for a in activities:
+            if not isinstance(a, dict):
+                continue
             aid = _get_id(a)
-            if isinstance(a, dict) and aid not in existing_ids:
-                cached.append(a)
-                existing_ids.add(aid)
+            if aid not in cached_map:
+                cached_map[aid] = a
                 new_count += 1
+            elif self._title_guard_keep_cached(cached_map[aid], a):
+                # 标题保护：跳过本次更新，保留缓存中的自定义标题
+                continue
+            else:
+                cached_map[aid] = a
+                update_count += 1
+
+        cached = list(cached_map.values())
 
         # 按时间排序（最新在前）
         cached.sort(
@@ -403,7 +446,7 @@ class GarminDataFetcher:
         with open(self._activities_cache, "w", encoding="utf-8") as f:
             json.dump(cached, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"缓存已保存: {len(cached)} 条活动（新增 {new_count} 条）")
+        logger.info(f"缓存已保存: {len(cached)} 条活动（新增 {new_count} 条，更新 {update_count} 条）")
 
     def _load_cache(self) -> list[dict]:
         """加载本地缓存的活动数据"""
