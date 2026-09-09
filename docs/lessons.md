@@ -24,3 +24,4 @@
 - **iCloud 复制防死锁**：`shutil.copy2` 覆盖写入会被 iCloud 同步锁阻塞（EDEADLK），必须先 `dst.unlink(missing_ok=True)` 再 copy
 - **深度分析距离取整**：prompt 中距离用 `int()` 取整，避免 AI 生成不存在的分段（如 16.2KM 出现"第 17KM"）
 - **图表横轴日期**：用 `type='date'` + `tickformat='%m-%d'`，让 Plotly 自动选刻度，不要手动按月分组
+- **强度结构卡强度口径**：按 Z2+ 统计强度次数（老板保守 max_hr=188，强度课心率多落 Z2，按 Z3+ 会漏计）

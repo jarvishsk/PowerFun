@@ -182,10 +182,10 @@ class ReportGenerator:
                 'action': '保持当前轻松跑比例'
             }
         else:
-            # Z1 > 50%，统计 Z3/Z4/Z5 次数
+            # Z1 > 50%，统计 Z2+ 次数（老板实际强度课多落在 Z2，按 Z2+ 口径统计）
             intensity_count = (
                 recent_df['hr_zone'].isin([
-                    'Z3-乳酸阈值', 'Z4-无氧耐力', 'Z5-最大强度'
+                    'Z2-有氧耐力', 'Z3-乳酸阈值', 'Z4-无氧耐力', 'Z5-最大强度'
                 ]).sum()
             )
             if intensity_count <= 1:
