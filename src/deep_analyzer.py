@@ -62,7 +62,6 @@ class DeepRunAnalyzer:
         result['efficiency'] = self._analyze_efficiency(row)
         result['comparison'] = self._compare_with_history(row)
         result['findings'] = self._extract_findings(result)
-        result['brief_summary'] = self._generate_brief_summary(row)
         result['hr_zone_ranges'] = self._get_hr_zone_ranges(row)
         # 分圈分析结果
         result['laps'] = self.lap_data
@@ -71,54 +70,6 @@ class DeepRunAnalyzer:
         result['pa_hr'] = self._calc_pa_hr(self.raw_laps) if self.raw_laps else None
         
         return result
-    
-    def _generate_brief_summary(self, row: pd.Series) -> str:
-        """生成约100字的简要总结"""
-        try:
-            # 获取主要数据
-            date = str(row.get('date', ''))[:10]
-            category_name = row.get('category_name', '跑步')
-            distance = row.get('distance', 0)
-            duration_min = row.get('duration_min', 0)
-            avg_pace_fmt = row.get('avg_pace_fmt', '--')
-            avg_hr = row.get('avg_hr', 0)
-            
-            # 根据平均心率确定主训练区间
-            hr_zone_ranges = self._get_hr_zone_ranges(row)
-            avg_hr = row.get('avg_hr', 0)
-            dominant_zone = '未知'
-            for zone_key in ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']:
-                if zone_key in hr_zone_ranges:
-                    zone = hr_zone_ranges[zone_key]
-                    if zone['min_hr'] <= avg_hr <= zone['max_hr']:
-                        dominant_zone = f"{zone_key}-{zone['label']}"
-                        break
-            
-            # 构建提示词，明确要求生成100字左右的总结
-            prompt = f"""请用100字左右的中文总结这次跑步：{date} {category_name} {distance:.1f}km {duration_min:.0f}分钟，
-            配速{avg_pace_fmt}/km，平均心率{avg_hr:.0f}，主训练区间{dominant_zone}。
-            请突出训练重点和特点，语言专业、简洁，不少于80字。"""
-            
-            # 调用 LLM 生成简要总结（复用 LLMReportGenerator._call_llm）
-            llm_gen = LLMReportGenerator(df_all=self.df_all)
-            if llm_gen.api_key:
-                result, _ = llm_gen._call_llm(
-                    prompt,
-                    api_key=llm_gen.api_key,
-                    model=llm_gen.config.get('model'),
-                    host=llm_gen.config.get('host'),
-                    port=llm_gen.config.get('port'),
-                    use_http=llm_gen.config.get('use_http', False),
-                    path=llm_gen.config.get('path'),
-                    max_tokens=2000,
-                    temperature=llm_gen.config.get('temperature', 1)
-                )
-                if result:
-                    return result.strip()
-            return ""
-        except Exception as e:
-            logger.error(f"Brief summary generation failed: {e}")
-            return ""
     
     def _get_hr_zone_ranges(self, row: pd.Series) -> dict:
         """获取心率区间范围（bpm）
@@ -1148,25 +1099,45 @@ class LLMReportGenerator:
     
     def generate(self, analysis_data: dict, user_note: str = None) -> tuple:
         """基于结构化分析数据生成 LLM 文字报告
-        
+
         Args:
             analysis_data: DeepRunAnalyzer.analyze() 返回的结果
             user_note: 跑者体感备注（可选），将与客观数据一起提交给 AI 综合分析
-            
+
         Returns:
-            (report_text, actual_model) 元组，actual_model 为 LLM 实际返回的模型名
+            (report_text, actual_model, brief_summary) 元组，actual_model 为 LLM 实际返回的模型名，
+            brief_summary 为解析出的 100 字简报（解析失败时为空字符串）
         """
+        display_name = self.config.get('display_name', 'AI模型')
         if not self.api_key:
-            return "（API Key 未配置，跳过 AI 分析）", self.config.get('display_name', 'AI模型')
-        
+            return "（API Key 未配置，跳过 AI 分析）", display_name, ""
+
         prompt = self._build_prompt(analysis_data, user_note=user_note)
-        
+        logger.info(f"prompt 字符数: {len(prompt)}")
+
         try:
             content, actual_model = self._call_api(prompt)
-            return content, actual_model
+            # 解析 <<<BRIEF>>> 分隔块：正文去掉该块，简报单独返回
+            content, brief = self._parse_brief(content)
+            return content, actual_model, brief
         except Exception as e:
             logger.error(f"LLM API 调用失败: {e}")
-            return f"（AI 分析调用失败: {e}）", self.config.get('display_name', 'AI模型')
+            return f"（AI 分析调用失败: {e}）", display_name, ""
+
+    @staticmethod
+    def _parse_brief(content: str) -> tuple:
+        """从 LLM 输出解析 <<<BRIEF>>> 简报分隔块
+
+        Returns:
+            (报告正文, 简报)；未按格式输出时降级为 (全文, "")
+        """
+        import re
+        m = re.search(r'<<<BRIEF>>>(.*?)<<<END>>>', content, re.DOTALL)
+        if not m:
+            return content, ""
+        brief = m.group(1).strip()
+        report = (content[:m.start()] + content[m.end():]).strip()
+        return report, brief
     
     def _build_prompt(self, data: dict, user_note: str = None) -> str:
         """构建 LLM Prompt"""
@@ -1224,24 +1195,18 @@ class LLMReportGenerator:
 ## 关键发现
 {chr(10).join(f'- {f}' for f in findings)}
 
-请生成包含以下内容的分析文字：
+请生成包含以下 6 个小节的分析文字（小节标题格式 `## emoji 标题`，## 后一个空格、emoji 后一个空格，无其他连接符，标题文本与清单完全一致）：
+## 🔥 本次跑步小结 / ## 🏃 强度与负荷分析 / ## ⚙️ 技术效率分析 / ## 📈 能力变化趋势 / ## 🔄 分圈表现分析 / ## 🎯 改进建议
 
-1. 本次跑步小结（2-3 句，通俗易懂，有温度）。在小结末尾，用一句话提炼本次训练的核心价值（通俗易记的锚点，例如"用 Z1/Z2 的心率代价跑出了接近 Z3 的配速输出"）。小标题用 ## 🔥 本次跑步小结
-2. 强度和负荷分析（心率、功率、训练效果的综合评价）。小标题用 ## 🏃 强度与负荷分析
-3. 技术效率分析（步频、步幅、垂直振幅、触地时间的综合分析）。若某项指标评价为"一般"或"较差"，必须给出具体改进目标值（如"触地时间压缩至 220-230ms"）和对应的练习方法。小标题用 ## ⚙️ 技术效率分析
-4. 能力变化趋势（基于历史对比的解读）。小标题用 ## 📈 能力变化趋势
-5. 分圈表现分析。必须按前/中/后程拆解，分析每段的配速变化趋势和心率变化趋势，指出是否存在"热身不足""后程过猛""心率漂移"等现象，像还原训练现场一样描述。小标题用 ## 🔄 分圈表现分析。段落内部必须采用 Markdown 无序列表，每项以 `- **前段（X-Y km）**：具体描述` / `- **中段（X-Y km）**：具体描述` / `- **后段（X-Y km）**：具体描述` 的加粗格式呈现，不得写成连续长段。
-6. 具体的改进建议（3-5 条）。必须按优先级分层：【最高优先】→【次优先】→【中长期】，每条标注优先级并说明为什么最紧迫。同时区分"针对本次训练的技术/强度调整"和"长期训练管理"，本次训练建议在前，长期建议作为补充放在最后。小标题用 ## 🎯 改进建议。每条建议必须以 Markdown 编号列表呈现，格式为 `1. **【最高优先】标题**：具体建议内容`、`2. **【次优先】标题**：具体建议内容`、`3. **【中长期】标题**：具体建议内容`，标题必须加粗，编号必须连续。
+1. 本次跑步小结：2-3 句通俗有温度，末尾一句话提炼核心价值（易记锚点，如"用 Z1/Z2 的心率代价跑出接近 Z3 的配速输出"）
+2. 强度与负荷分析：心率、功率、训练效果综合评价
+3. 技术效率分析：步频、步幅、垂直振幅、触地时间综合解读；"一般/较差"指标须给改进目标值（如"触地时间压至 220-230ms"）和对应练习方法
+4. 能力变化趋势：基于历史对比解读
+5. 分圈表现分析：按前/中/后程拆解配速与心率变化，指出"热身不足""后程过猛""心率漂移"等现象，还原训练现场；段内用无序列表，每项 `- **前段（X-Y km）**：描述`，中段/后段同格式，不得写成连续长段
+6. 改进建议：3-5 条，按【最高优先】→【次优先】→【中长期】分层并说明紧迫性，本次训练调整在前、长期管理补充在后；连续编号列表，格式 `1. **【最高优先】标题**：内容`
+7. 报告最后一行输出 `<<<BRIEF>>>100字以内的简要总结（突出训练重点和特点，语言专业简洁，80-120字）<<<END>>>` 包裹的简报
 
-要求：
-- 语言风格：专业、严谨、务实
-- 行文格式规整统一，使用 Markdown 语法，每个主要段落用 ## emoji 小标题 单独成行（## 🔥 本次跑步小结、## 🏃 强度与负荷分析、## ⚙️ 技术效率分析、## 📈 能力变化趋势、## 🔄 分圈表现分析、## 🎯 改进建议）。注意：## 和 emoji 之间有一个空格，emoji 和标题之间有一个空格，不要额外特殊连接符
-- 所有次级小标题（分圈阶段、建议优先级、技术目标）必须用 `**加粗**` 强调，不可仅作为普通文本出现
-- 避免堆砌数字，重点解读趋势和意义
-- 建议要具体可执行，给出量化目标值，不要空话
-- 避免绝对化表述（如"无功率漂移"），改用"未出现明显迹象""暂未观察到"等严谨措辞
-- 总字数控制在 1500 字以内
-- 不要输出报告标题、跑步类型、日期、配速等 header 信息，直接从正文小结开始写
+要求：语言专业严谨务实；Markdown 规整，次级小标题（分圈阶段、建议优先级、技术目标）必须 `**加粗**`；避免堆砌数字，重点解读趋势；建议具体可执行并给量化目标；避免绝对化表述（如"无功率漂移"），改用"未出现明显迹象""暂未观察到"；总字数 ≤1500；不要输出报告标题、类型、日期、配速等 header，直接从正文小结开始写
 """
 
         return prompt

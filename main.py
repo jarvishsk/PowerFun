@@ -126,7 +126,9 @@ def parse_args():
     parser.add_argument("--force-login", action="store_true", help="强制重新登录 (忽略已保存的 token)")
     parser.add_argument("--logout", action="store_true", help="删除已保存的 token 并退出")
     parser.add_argument("--deep-analyze", type=str, default=None,
-                        help="对指定跑步做深度分析（日期 YYYY-MM-DD 或关键词）")
+                        help="对指定跑步做深度分析（日期 YYYY-MM-DD、latest 或关键词）")
+    parser.add_argument("--force", action="store_true",
+                        help="强制重新调用 LLM 并覆盖缓存（仅 --deep-analyze 有效）")
     parser.add_argument("--deep-analyze-all", action="store_true",
                         help="对所有跑步批量生成深析报告")
     parser.add_argument("--load-parquet", action="store_true",
@@ -253,10 +255,101 @@ def _build_pa_hr_history_chart(df: pd.DataFrame, activity_id, target_ts,
     return chart_gen.create_pa_hr_trend_chart(pa_hr_history_list)
 
 
+def _llm_cache_path(analysis_dir: Path, activity_id):
+    """深析 LLM 输出缓存路径；无有效 activity_id 时返回 None（不缓存）"""
+    if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
+        return analysis_dir / "cache" / f"llm_{activity_id}.md"
+    return None
+
+
+def _user_note_hash(user_note: str) -> str:
+    """user_note 的 sha256（未传备注时为空串）"""
+    import hashlib
+    return hashlib.sha256(user_note.encode('utf-8')).hexdigest() if user_note else ''
+
+
+def _read_llm_cache(cache_path, user_note: str):
+    """读取 LLM 缓存。命中返回 (content, model)，未命中返回 None
+
+    命中条件：缓存存在且（本次未传 --user-note 或 hash 与缓存一致）
+    """
+    if cache_path is None or not cache_path.exists():
+        return None
+    try:
+        lines = cache_path.read_text(encoding='utf-8').split('\n')
+        if len(lines) < 4:
+            return None
+        if not lines[0].startswith('user_note_hash: ') or not lines[1].startswith('model: '):
+            return None
+        if user_note and lines[0].split(': ', 1)[1] != _user_note_hash(user_note):
+            return None
+        model = lines[1].split(': ', 1)[1]
+        content = '\n'.join(lines[3:])
+        return content, model
+    except Exception as e:
+        logger.warning(f"LLM 缓存读取失败，忽略缓存: {e}")
+        return None
+
+
+def _write_llm_cache(cache_path, user_note: str, model: str, content: str) -> None:
+    """写入 LLM 缓存（frontmatter 两行 + 正文）"""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            f"user_note_hash: {_user_note_hash(user_note)}\n"
+            f"model: {model}\n"
+            f"\n"
+            f"{content}",
+            encoding='utf-8',
+        )
+    except Exception as e:
+        logger.warning(f"LLM 缓存写入失败: {e}")
+
+
+def _llm_report_degraded(llm_report: str) -> bool:
+    """LLM 输出是否为降级文案（未配置/调用失败），降级时不写缓存"""
+    return (not llm_report) or ('未配置' in llm_report) or ('失败' in llm_report)
+
+
+def _generate_llm_report(df: pd.DataFrame, analysis_data: dict, analysis_dir: Path,
+                         activity_id, user_note: str = None, force: bool = False) -> tuple:
+    """生成 LLM 教练点评（带同日缓存），并把简报回填到 analysis_data['brief_summary']
+
+    Returns:
+        (llm_report, actual_model)
+    """
+    from src.deep_analyzer import LLMReportGenerator
+
+    cache_path = _llm_cache_path(analysis_dir, activity_id)
+    if not force:
+        cached = _read_llm_cache(cache_path, user_note)
+        if cached is not None:
+            content, model = cached
+            logger.info("复用 LLM 缓存，跳过 API 调用")
+            llm_report, brief = LLMReportGenerator._parse_brief(content)
+            analysis_data['brief_summary'] = brief
+            return llm_report, model
+
+    llm_gen = LLMReportGenerator(df_all=df)
+    llm_report, actual_model, brief = llm_gen.generate(analysis_data, user_note=user_note)
+    analysis_data['brief_summary'] = brief
+
+    # LLM 调用失败（降级文案）时不写缓存
+    if cache_path is not None and not _llm_report_degraded(llm_report):
+        # 缓存正文保留 BRIEF 分隔块，保证缓存命中时简报不丢失
+        cached_content = llm_report
+        if brief:
+            cached_content = f"{llm_report}\n\n<<<BRIEF>>>{brief}<<<END>>>"
+        _write_llm_cache(cache_path, user_note, actual_model, cached_content)
+
+    return llm_report, actual_model
+
+
 def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           analysis_dir: Path, output_dir: Path,
                           max_hr: int, resting_hr: int,
-                          fetcher=None, user_note: str = None) -> str:
+                          fetcher=None, user_note: str = None,
+                          force: bool = False) -> str:
     """对单次跑步生成深度分析报告"""
 
     from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
@@ -315,9 +408,10 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
         fetcher_obj if activity_id and fetcher else fetcher
     )
 
-    llm_gen = LLMReportGenerator(df_all=df)
-    llm_report, actual_model = llm_gen.generate(analysis_data, user_note=user_note)
-    
+    llm_report, actual_model = _generate_llm_report(
+        df, analysis_data, analysis_dir, activity_id,
+        user_note=user_note, force=force)
+
     report_gen = AnalysisReportGenerator(str(analysis_dir))
     html_path = report_gen.generate(analysis_data, llm_report,
                                     lap_pace_chart_html=lap_pace_chart_html,
@@ -388,7 +482,7 @@ def _print_summary(stats: dict):
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
                  max_hr: int, resting_hr: int, user_note: str = None,
-                 fetcher=None) -> None:
+                 fetcher=None, force: bool = False) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
@@ -415,16 +509,20 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             query = deep_analyze
             matched = pd.DataFrame()
 
-            # 尝试日期格式匹配
-            try:
-                target_date = pd.Timestamp(query)
-                matched = df[df['date'].dt.date == target_date.date()]
-            except (ValueError, TypeError):
-                pass
+            if query.strip().lower() == 'latest':
+                # 字面量 latest：取 parquet 中最新一次跑步
+                matched = df[df['date'].dt.date == df['date'].max().date()]
+            else:
+                # 尝试日期格式匹配
+                try:
+                    target_date = pd.Timestamp(query)
+                    matched = df[df['date'].dt.date == target_date.date()]
+                except (ValueError, TypeError):
+                    pass
 
-            # 如果没匹配到，尝试标题模糊匹配
-            if matched.empty:
-                matched = df[df['title'].str.contains(query, case=False, na=False)]
+                # 如果没匹配到，尝试标题模糊匹配
+                if matched.empty:
+                    matched = df[df['title'].str.contains(query, case=False, na=False)]
 
             if len(matched) == 0:
                 logger.error(f"未找到匹配的跑步记录: {query}")
@@ -444,7 +542,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             _generate_deep_report(df, target_run, analysis_dir, output_dir,
                                   max_hr=max_hr, resting_hr=resting_hr,
                                   fetcher=deep_fetcher,
-                                  user_note=user_note)
+                                  user_note=user_note, force=force)
             if not fetcher:
                 deep_fetcher.close()
         else:
@@ -545,8 +643,9 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
         if activity_id:
             temp_fetcher.close()
 
-        llm_gen = LLMReportGenerator(df_all=df)
-        llm_report, actual_model = llm_gen.generate(analysis_data, user_note=user_note)
+        llm_report, actual_model = _generate_llm_report(
+            df, analysis_data, analysis_dir, activity_id,
+            user_note=user_note)
 
         report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
         html_path = report_gen_deep.generate(analysis_data, llm_report,
@@ -675,7 +774,7 @@ def _main_inner(args):
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
                      args.max_hr, args.resting_hr, user_note=args.user_note,
-                     fetcher=fetcher)
+                     fetcher=fetcher, force=args.force)
         return
 
     # ==========================================================
@@ -839,7 +938,7 @@ def _main_inner(args):
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
                      args.max_hr, args.resting_hr, user_note=args.user_note,
-                     fetcher=fetcher)
+                     fetcher=fetcher, force=args.force)
     finally:
         if fetcher is not None:
             fetcher.close()
