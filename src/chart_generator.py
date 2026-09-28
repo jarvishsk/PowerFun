@@ -556,7 +556,7 @@ class ChartGenerator:
                 y=df['vertical_ratio'].tolist(),
                 mode='lines+markers',
                 name='垂直振幅比 (%)',
-                line=dict(color='#4169E1', width=2),
+                line=dict(color='#4169E1', width=2, shape='spline', smoothing=0.8),
                 marker=dict(size=6, color='#4169E1'),
                 hovertemplate="日期: %{x|%Y-%m-%d}<br>垂直振幅比: %{y:.1f}%<extra></extra>"
             ), secondary_y=False)
@@ -567,16 +567,33 @@ class ChartGenerator:
                 y=df['ground_contact_time'].tolist(),
                 mode='lines+markers',
                 name='触地时间 (ms)',
-                line=dict(color='#FF6B6B', width=2, dash='dash'),
+                line=dict(color='#FF6B6B', width=2, dash='dash', shape='spline', smoothing=0.8),
                 marker=dict(size=6, color='#FF6B6B', symbol='diamond'),
                 hovertemplate="日期: %{x|%Y-%m-%d}<br>触地时间: %{y:.0f} ms<extra></extra>"
             ), secondary_y=True)
 
+        # 双轴范围错开：VR 线压在下部、GCT 线抬在上部，避免视觉重叠（不改数据本身）
+        yaxis_cfg = dict(title='垂直振幅比 (%)')
+        yaxis2_cfg = dict(title='触地时间 (ms)')
+        if has_vr and has_gct:
+            vr_vals = df['vertical_ratio'].dropna()
+            gct_vals = df['ground_contact_time'].dropna()
+            vr_span = max(vr_vals.max() - vr_vals.min(), 0.5)
+            gct_span = max(gct_vals.max() - gct_vals.min(), 5.0)
+            yaxis_cfg['range'] = [
+                round(max(0, vr_vals.min() - 0.2 * vr_span), 1),
+                round(vr_vals.min() + 2.6 * vr_span, 1),
+            ]
+            yaxis2_cfg['range'] = [
+                round(gct_vals.min() - 1.6 * gct_span, 1),
+                round(gct_vals.max() + 0.3 * gct_span, 1),
+            ]
+
         fig.update_layout(
             title=None,
             xaxis=dict(tickangle=0, title=None, type='date', tickformat='%m-%d'),
-            yaxis=dict(title='垂直振幅比 (%)'),
-            yaxis2=dict(title='触地时间 (ms)'),
+            yaxis=yaxis_cfg,
+            yaxis2=yaxis2_cfg,
             height=400,
             hovermode='x unified',
             **self._common_layout_style
