@@ -479,6 +479,16 @@ ANALYSIS_HTML_TEMPLATE = """
             <span class="status-label">  效率</span>
             <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span>{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
         </div>
+        {% elif comparison.get('short_term') %}
+        <div class="status-row">
+            <span class="status-label">今日状态</span>
+            <span class="status-value"><span class="trend-badge neutral">数据不足{% if comparison.short_term.get('sample_size') is not none %}（同类型样本 {{ comparison.short_term.sample_size }} 个）{% endif %}</span></span>
+        </div>
+        {% else %}
+        <div class="status-row">
+            <span class="status-label">今日状态</span>
+            <span class="status-value"><span class="trend-badge neutral">数据不足</span></span>
+        </div>
         {% endif %}
         
         {% set lt = comparison.get('long_term') or {} %}
@@ -497,6 +507,11 @@ ANALYSIS_HTML_TEMPLATE = """
                 <span style="color:#666;font-size:12px;">去年同期：心率 {{ yoy.get('current_hr')|int }} vs {{ yoy.get('hr_median')|int }} bpm{% if yoy.get('pace_median_sec') is not none %}，配速 {{ yoy.get('current_pace_sec')|format_pace }} vs {{ yoy.get('pace_median_sec')|format_pace }}{% endif %}</span>
                 {% endif %}
             </span>
+        </div>
+        {% elif comparison.get('long_term') %}
+        <div class="status-row">
+            <span class="status-label">长期趋势</span>
+            <span class="status-value"><span class="trend-badge neutral">数据不足（样本积累中）</span></span>
         </div>
         {% endif %}
         
