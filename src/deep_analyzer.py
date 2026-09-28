@@ -394,7 +394,7 @@ class DeepRunAnalyzer:
                 'history_p20': st['p20'],
                 'history_p80': st['p80'],
                 'diff': round(vr_diff, 1),
-                'verdict': '更经济' if vr_diff < -0.5 else ('更费力' if vr_diff > 0.5 else '持平'),
+                'verdict': '更经济' if vr_diff < -0.2 else ('更费力' if vr_diff > 0.2 else '持平'),
             }
         
         if 'cadence' in df_same.columns and df_same['cadence'].notna().any():
@@ -436,6 +436,7 @@ class DeepRunAnalyzer:
         # 新增：状态评估与趋势分析
         result['short_term'] = self._calc_short_term(row, category_norm, target_bucket, df)
         result['long_term'] = self._calc_long_term(row, category_norm, target_bucket, df)
+        result['tech_changes'] = self._calc_tech_changes(row, df_same)
         
         # 获取长期基线数据用于百分位和预期配速计算
         df_long_term = self._get_long_term_baseline(row, category_norm, target_bucket, df)
@@ -577,6 +578,51 @@ class DeepRunAnalyzer:
             'sample_size': len(recent_laps),
         }
 
+    def _calc_tech_changes(self, row: pd.Series, df_same: pd.DataFrame) -> list:
+        """对比本次 vs 历史中位数，仅列出超阈值变化的技术指标
+
+        阈值：vertical_ratio ±0.2、ground_contact_time ±5ms、cadence ±2spm、stride_length ±1cm
+        方向：VR/GCT 越低越好；cadence/stride 只做变化量不做方向判定
+
+        Returns:
+            变化项列表，每项含 metric/current/baseline/diff/unit/direction
+        """
+        def hist_median(col: str):
+            if col in df_same.columns and df_same[col].notna().any():
+                return df_same[col].dropna().median()
+            return None
+
+        specs = [
+            ('vertical_ratio', '垂直振幅比', 0.2, 'lower', '%'),
+            ('ground_contact_time', '触地时间', 5, 'lower', 'ms'),
+            ('cadence', '步频', 2, 'neutral', 'spm'),
+            ('stride_length', '步幅', 1, 'neutral', 'cm'),
+        ]
+
+        changes = []
+        for col, label, threshold, direction, unit in specs:
+            baseline = hist_median(col)
+            curr = row.get(col)
+            if baseline is None or curr is None or pd.isna(curr):
+                continue
+            diff = curr - baseline
+            if abs(diff) < threshold:
+                continue
+            if direction == 'lower':
+                verdict = 'improved' if diff < 0 else 'regressed'
+            else:
+                verdict = 'changed'
+            changes.append({
+                'metric': label,
+                'field': col,
+                'current': round(curr, 2),
+                'baseline': round(baseline, 2),
+                'diff': round(diff, 2),
+                'unit': unit,
+                'direction': verdict,
+            })
+        return changes
+
     def _get_temp_bucket(self, row_data):
         """获取温区桶（内部辅助方法）"""
         min_temp = row_data.get('min_temperature')
@@ -710,6 +756,12 @@ class DeepRunAnalyzer:
         else:
             temp_bucket_label = temp_bucket
 
+        # 当前值与基线值（供模板渲染数据解释；0/NaN 视为数据不足）
+        def _clean_num(val):
+            if val is None or pd.isna(val) or val == 0:
+                return None
+            return val
+
         return {
             'window_days': 30,
             'sample_size': len(df_same_temp),
@@ -720,14 +772,23 @@ class DeepRunAnalyzer:
             'verdict_hr': hr_verdict,
             'verdict_pace': pace_verdict,
             'verdict_efficiency': eff_verdict,
+            'hr_current': _clean_num(curr_hr),
+            'hr_baseline': _clean_num(hr_median),
+            'pace_current_sec': _clean_num(curr_pace),
+            'pace_baseline_sec': _clean_num(pace_median),
+            'eff_current': round(curr_eff, 2) if _clean_num(curr_eff) is not None else None,
+            'eff_baseline': round(efficiency_median, 2) if _clean_num(efficiency_median) is not None else None,
         }
     
     def _calc_long_term(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> dict:
-        """计算长期趋势（近180天同类型同温区线性回归）"""
+        """计算长期趋势（近180天同类型同温区线性回归），含去年同期对比"""
         # 获取目标日期
         if self.target_date is None:
             return None
         target_ts = pd.Timestamp(self.target_date)
+
+        # 去年同期等价窗口（对齐月日，向前相同天数），无数据时为 {'message': '数据不足'}
+        yoy = self._calc_yoy(row, category, df_all)
         
         # 筛选同类型数据
         df_filtered = df_all[df_all['_category_norm'] == category].copy()
@@ -768,6 +829,7 @@ class DeepRunAnalyzer:
                 'sample_size': len(df_same_temp),
                 'months_available': 0,
                 'verdict': '数据不足',
+                'yoy': yoy,
             }
         
         # 按月分组，计算每月中位数（使用 .copy() 避免 SettingWithCopyWarning）
@@ -788,6 +850,7 @@ class DeepRunAnalyzer:
                 'sample_size': len(df_same_temp),
                 'months_available': len(monthly_stats),
                 'verdict': '数据不足',
+                'yoy': yoy,
             }
         
         # 准备线性回归数据
@@ -867,8 +930,63 @@ class DeepRunAnalyzer:
             },
             'verdict': verdict,
             'reason': reason,
+            'yoy': yoy,
         }
     
+    def _calc_yoy(self, row: pd.Series, category: str, df_all: pd.DataFrame) -> Optional[dict]:
+        """去年同期等价窗口对比：本次日期 -1 年，向前取与长期窗口一致的天数（180 天）
+
+        对比维度：心率中位、配速中位（样本≥3 时附月趋势斜率）
+        无数据时返回 {'message': '数据不足'}
+        """
+        if self.target_date is None:
+            return None
+        target_ts = pd.Timestamp(self.target_date)
+        window_days = 180
+        yoy_end = target_ts - pd.DateOffset(years=1)
+        yoy_start = yoy_end - pd.Timedelta(days=window_days - 1)
+
+        df_cat = df_all[df_all['_category_norm'] == category].copy()
+        activity_id = row.get('activity_id')
+        if activity_id:
+            df_cat = df_cat[df_cat['activity_id'] != activity_id]
+        df_win = df_cat[(df_cat['date'] >= yoy_start) & (df_cat['date'] <= yoy_end)]
+
+        def _clean(val):
+            if val is None or pd.isna(val):
+                return None
+            return val
+
+        hr_median = _clean(df_win['avg_hr'].dropna().median()) if 'avg_hr' in df_win.columns else None
+        pace_median = _clean(df_win['avg_pace_sec'].dropna().median()) if 'avg_pace_sec' in df_win.columns else None
+
+        if hr_median is None and pace_median is None:
+            return {'message': '数据不足'}
+
+        result = {
+            'window_days': window_days,
+            'sample_size': len(df_win),
+            'hr_median': round(hr_median, 0) if hr_median is not None else None,
+            'pace_median_sec': round(pace_median, 0) if pace_median is not None else None,
+            'current_hr': round(row.get('avg_hr', 0), 0),
+            'current_pace_sec': row.get('avg_pace_sec', 0),
+        }
+
+        # 样本≥3 时计算月趋势斜率（实现从简：按日期线性回归）
+        if len(df_win) >= 3:
+            df_fit = df_win.sort_values('date')
+            x = (df_fit['date'] - yoy_start).dt.days.astype(float).values
+            if hr_median is not None and df_fit['avg_hr'].notna().sum() >= 3:
+                mask = df_fit['avg_hr'].notna().values
+                slope = np.polyfit(x[mask], df_fit.loc[mask, 'avg_hr'].values, 1)[0]
+                result['hr_slope_per_month'] = round(float(slope) * 30, 2)
+            if pace_median is not None and df_fit['avg_pace_sec'].notna().sum() >= 3:
+                mask = df_fit['avg_pace_sec'].notna().values
+                slope = np.polyfit(x[mask], df_fit.loc[mask, 'avg_pace_sec'].values, 1)[0]
+                result['pace_slope_per_month'] = round(float(slope) * 30, 2)
+
+        return result
+
     def _calc_percentile(self, row: pd.Series, df_baseline: pd.DataFrame) -> dict:
         """计算百分位排名"""
         if len(df_baseline) < 5:
@@ -1164,6 +1282,34 @@ class LLMReportGenerator:
             truncated = safe_note if len(safe_note) <= 800 else safe_note[:800] + '\u2026'
             runner_note_section = f"## 🏃 跑者自述（体感反馈）\n> {truncated}\n\n"
 
+        # C1：技术段只在有变化时展开（tech_changes 来自 _compare_with_history）
+        tech_changes = comparison.get('tech_changes', [])
+        tech_lines = [
+            f"- 步频：{raw.get('cadence', 0)} spm（{efficiency.get('cadence_eval', '')}）",
+            f"- 步幅：{raw.get('stride_length_cm', 0):.1f} cm",
+            f"- 垂直振幅比：{raw.get('vertical_ratio_pct', 0):.1f}%（{efficiency.get('vertical_ratio_eval', '')}）",
+            f"- 触地时间：{raw.get('ground_contact_ms', 0):.1f} ms（{efficiency.get('ground_contact_eval', '')}）",
+        ]
+        if tech_changes:
+            tech_lines.append('与历史中位数相比的变化（仅列出超阈值项，方向：VR/触地时间越低越好）：')
+            for c in tech_changes:
+                if c['direction'] == 'improved':
+                    word = '改善'
+                elif c['direction'] == 'regressed':
+                    word = '退步'
+                else:
+                    word = '升高' if c['diff'] > 0 else '降低'
+                diff_str = f"{c['diff']:+.2f}".rstrip('0').rstrip('.')
+                tech_lines.append(
+                    f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 历史中位 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，{word}）"
+                )
+            tech_instruction = ('技术效率分析：只对上述有变化的指标展开点评（未变化指标不必罗列），'
+                                '评价较差的指标须给改进目标值（如"触地时间压至 220-230ms"）和对应练习方法')
+        else:
+            tech_instruction = ('技术效率分析：本次各项技术指标与历史水平相比均无超阈值变化，'
+                                '本节用一句话确认稳定即可，不要逐项罗列指标数值')
+        tech_section = '\n'.join(tech_lines)
+
         prompt = f"""你是一位专业的跑步教练和运动科学家。请基于跑者自述（如有，见上方「跑者自述」段落），以及以下数据，生成一份专业的跑步分析报告。
 
 {runner_note_section}## 跑步基本信息
@@ -1183,10 +1329,7 @@ class LLMReportGenerator:
 - 有氧训练效果：{raw.get('aerobic_te', 0)}，无氧训练效果：{raw.get('anaerobic_te', 0)}
 
 ## 技术分析
-- 步频：{raw.get('cadence', 0)} spm（{efficiency.get('cadence_eval', '')}）
-- 步幅：{raw.get('stride_length_cm', 0):.1f} cm
-- 垂直振幅比：{raw.get('vertical_ratio_pct', 0):.1f}%（{efficiency.get('vertical_ratio_eval', '')}）
-- 触地时间：{raw.get('ground_contact_ms', 0):.1f} ms（{efficiency.get('ground_contact_eval', '')}）
+{tech_section}
 
 ## 历史对比
 {self._format_comparison(comparison)}
@@ -1200,10 +1343,10 @@ class LLMReportGenerator:
 
 1. 本次跑步小结：2-3 句通俗有温度，末尾一句话提炼核心价值（易记锚点，如"用 Z1/Z2 的心率代价跑出接近 Z3 的配速输出"）
 2. 强度与负荷分析：心率、功率、训练效果综合评价
-3. 技术效率分析：步频、步幅、垂直振幅、触地时间综合解读；"一般/较差"指标须给改进目标值（如"触地时间压至 220-230ms"）和对应练习方法
+3. {tech_instruction}
 4. 能力变化趋势：基于历史对比解读
 5. 分圈表现分析：按前/中/后程拆解配速与心率变化，指出"热身不足""后程过猛""心率漂移"等现象，还原训练现场；段内用无序列表，每项 `- **前段（X-Y km）**：描述`，中段/后段同格式，不得写成连续长段
-6. 改进建议：3-5 条，按【最高优先】→【次优先】→【中长期】分层并说明紧迫性，本次训练调整在前、长期管理补充在后；连续编号列表，格式 `1. **【最高优先】标题**：内容`
+6. 改进建议：只针对本次跑步暴露的问题（如分圈漂移、心率失控、配速执行偏差、天气应对失误等）提 2-5 条建议；长期固化存在的技术短板除非本次明显恶化，否则不提；按【最高优先】→【次优先】→【中长期】分层并说明紧迫性；若本次执行无大问题，允许只给 2-3 条，不强行凑数；连续编号列表，格式 `1. **【最高优先】标题**：内容`
 7. 报告最后一行输出 `<<<BRIEF>>>100字以内的简要总结（突出训练重点和特点，语言专业简洁，80-120字）<<<END>>>` 包裹的简报
 
 要求：语言专业严谨务实；Markdown 规整，次级小标题（分圈阶段、建议优先级、技术目标）必须 `**加粗**`；避免堆砌数字，重点解读趋势；建议具体可执行并给量化目标；避免绝对化表述（如"无功率漂移"），改用"未出现明显迹象""暂未观察到"；总字数 ≤1500；不要输出报告标题、类型、日期、配速等 header，直接从正文小结开始写
@@ -1248,6 +1391,21 @@ class LLMReportGenerator:
                 parts.append(f"长期趋势（近{lt['window_days']}天）：心率月变化{trend['hr_slope_per_month']:+.1f}bpm，配速月变化{trend['pace_slope_per_month']:+.1f}秒，判定{lt['verdict']}")
             elif lt.get('verdict') == '数据不足':
                 parts.append(f"长期趋势（近{lt['window_days']}天）：{lt['verdict']}")
+        
+        # 去年同期对比（无数据时不出现，prompt 里不提示"没数据"）
+        yoy = lt.get('yoy', {}) if lt else {}
+        if yoy and yoy.get('hr_median') is not None:
+            yoy_line = f"去年同期（近{yoy['window_days']}天中位）：心率 {yoy['hr_median']:.0f} bpm"
+            if yoy.get('pace_median_sec'):
+                yoy_line += f"，配速 {self._format_pace(yoy['pace_median_sec'])}"
+            slope_parts = []
+            if yoy.get('hr_slope_per_month') is not None:
+                slope_parts.append(f"心率月变化{yoy['hr_slope_per_month']:+.1f}bpm")
+            if yoy.get('pace_slope_per_month') is not None:
+                slope_parts.append(f"配速月变化{yoy['pace_slope_per_month']:+.1f}秒")
+            if slope_parts:
+                yoy_line += f"（{'，'.join(slope_parts)}）"
+            parts.append(yoy_line)
         
         # 追加百分位
         pct = comp.get('percentile', {})

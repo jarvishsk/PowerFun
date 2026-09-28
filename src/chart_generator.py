@@ -532,72 +532,51 @@ class ChartGenerator:
         
         return self._to_js_dict(fig.to_dict())
 
-    def create_distance_trend_chart(self, df: pd.DataFrame) -> Dict:
-        """
-        创建距离趋势图
-        - 散点图 + 移动平均线(x轴使用实际日期,自动按时间排序)
-        - 按分类着色
+    def create_vr_gct_trend_chart(self, df: pd.DataFrame) -> Dict:
+        """创建垂直振幅比 & 触地时间双轴趋势图
+        - X 轴：日期（全部跑步记录）
+        - 左 Y 轴：vertical_ratio（%），右 Y 轴：ground_contact_time（ms）
+        - 缺失值为断点（Plotly 默认 connectgaps=False，不填 0）
         """
         if df.empty:
             return {}
 
+        has_vr = 'vertical_ratio' in df.columns and df['vertical_ratio'].notna().any()
+        has_gct = 'ground_contact_time' in df.columns and df['ground_contact_time'].notna().any()
+        if not has_vr and not has_gct:
+            return {}
+
         df = df.copy().sort_values('date')
-        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
 
-        fig = go.Figure()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # 按分类绘制散点
-        # 合并全马和半马为同一个跑类
-        df = df.copy()
-        df.loc[df['category'].isin(['full_marathon', 'half_marathon', 'race_event']), 'category'] = 'race'
-
-        categories = df['category'].unique() if 'category' in df.columns else ['other']
-        cat_color_map = {
-            'race': '#FFD700',
-            'lsd': '#4169E1', 'easy_run': '#808080', 'aerobic_run': '#87CEEB',
-            'tempo_run': '#32CD32', 'intensity_run': '#FFA500', 'short_run': '#9370DB',
-            'other': '#999999'
-        }
-        cat_name_map = {
-            'race': '比赛',
-            'lsd': 'LSD', 'easy_run': '轻松跑', 'aerobic_run': '有氧耐力',
-            'tempo_run': '马拉松配速', 'intensity_run': '强度训练', 'short_run': '短距离',
-            'other': '其他'
-        }
-
-        for cat in categories:
-            cat_df = df[df['category'] == cat]
-            if cat_df.empty:
-                continue
-            color = cat_color_map.get(cat, '#999999')
-            name = cat_name_map.get(cat, cat)
-
-            fig.add_trace(go.Scatter(
-                x=cat_df['date'].tolist(),
-                y=cat_df['distance'].tolist(),
-                mode='markers',
-                name=name,
-                marker=dict(color=color, size=6, symbol='circle'),
-                hovertemplate="<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>距离: %{y:.1f} km<extra></extra>",
-                customdata=np.stack([cat_df['title'].values, cat_df['date_str'].values], axis=-1)
-            ))
-
-        # 移动平均线(窗口=10)
-        if len(df) >= 10:
-            rolling_avg = df['distance'].rolling(window=10, center=True).mean()
+        if has_vr:
             fig.add_trace(go.Scatter(
                 x=df['date'].tolist(),
-                y=rolling_avg.tolist(),
-                mode='lines',
-                name='10次移动平均',
+                y=df['vertical_ratio'].tolist(),
+                mode='lines+markers',
+                name='垂直振幅比 (%)',
+                line=dict(color='#4169E1', width=2),
+                marker=dict(size=6, color='#4169E1'),
+                hovertemplate="日期: %{x|%Y-%m-%d}<br>垂直振幅比: %{y:.1f}%<extra></extra>"
+            ), secondary_y=False)
+
+        if has_gct:
+            fig.add_trace(go.Scatter(
+                x=df['date'].tolist(),
+                y=df['ground_contact_time'].tolist(),
+                mode='lines+markers',
+                name='触地时间 (ms)',
                 line=dict(color='#FF6B6B', width=2, dash='dash'),
-                hovertemplate="日期: %{x|%Y-%m-%d}<br>移动平均: %{y:.1f} km<extra></extra>"
-            ))
+                marker=dict(size=6, color='#FF6B6B', symbol='diamond'),
+                hovertemplate="日期: %{x|%Y-%m-%d}<br>触地时间: %{y:.0f} ms<extra></extra>"
+            ), secondary_y=True)
 
         fig.update_layout(
             title=None,
             xaxis=dict(tickangle=0, title=None, type='date', tickformat='%m-%d'),
-            yaxis=dict(title='距离 (km)'),
+            yaxis=dict(title='垂直振幅比 (%)'),
+            yaxis2=dict(title='触地时间 (ms)'),
             height=400,
             hovermode='x unified',
             **self._common_layout_style
@@ -1499,10 +1478,10 @@ class ChartGenerator:
             charts['hr_zone_stacked'] = {}
 
         try:
-            charts['distance_trend'] = self.create_distance_trend_chart(df)
+            charts['vr_gct_trend'] = self.create_vr_gct_trend_chart(df)
         except Exception as e:
-            logger.warning(f"图表生成失败: distance_trend")
-            charts['distance_trend'] = {}
+            logger.warning(f"图表生成失败: vr_gct_trend")
+            charts['vr_gct_trend'] = {}
 
         try:
             charts['training_effect'] = self.create_training_effect_chart(df)

@@ -469,25 +469,32 @@ ANALYSIS_HTML_TEMPLATE = """
         {% set st = comparison.short_term %}
         <div class="status-row">
             <span class="status-label">  心率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_hr == '持平' else ('good' if '轻松' in st.verdict_hr else 'bad') }}">{{ st.verdict_hr }}</span></span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_hr == '持平' else ('good' if '轻松' in st.verdict_hr else 'bad') }}">{{ st.verdict_hr }}</span>{% if st.get('hr_current') is not none and st.get('hr_baseline') is not none %}　当前 {{ st.get('hr_current')|int }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('hr_baseline')|int }}（{{ (st.get('hr_current') - st.get('hr_baseline'))|signed }}）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  配速</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_pace == '持平' else ('good' if '快' in st.verdict_pace else 'bad') }}">{{ st.verdict_pace }}</span></span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_pace == '持平' else ('good' if '快' in st.verdict_pace else 'bad') }}">{{ st.verdict_pace }}</span>{% if st.get('pace_current_sec') is not none and st.get('pace_baseline_sec') is not none %}　当前 {{ st.get('pace_current_sec')|format_pace }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('pace_baseline_sec')|format_pace }}（{{ (st.get('pace_current_sec') - st.get('pace_baseline_sec'))|signed }} 秒）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  效率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span></span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span>{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
         </div>
         {% endif %}
         
-        {% if comparison.get('long_term') and comparison.long_term.get('trend') %}
+        {% set lt = comparison.get('long_term') or {} %}
+        {% set yoy = lt.get('yoy', {}) %}
+        {% if comparison.get('long_term') and (lt.get('trend') or (yoy and yoy.get('hr_median') is not none)) %}
         <div class="status-row">
             <span class="status-label">长期趋势</span>
             <span class="status-value">
-                <span class="trend-badge {{ 'good' if comparison.long_term.verdict == '进步' else ('bad' if comparison.long_term.verdict == '退步' else ('warn' if comparison.long_term.verdict == '分化' else 'neutral')) }}">{{ comparison.long_term.verdict }}</span>
-                {% if comparison.long_term.get('reason') %}
-                （{{ comparison.long_term.reason }}）
+                {% if lt.get('verdict') %}
+                <span class="trend-badge {{ 'good' if lt.verdict == '进步' else ('bad' if lt.verdict == '退步' else ('warn' if lt.verdict == '分化' else 'neutral')) }}">{{ lt.verdict }}</span>
+                {% endif %}
+                {% if lt.get('reason') %}
+                （{{ lt.reason }}）
+                {% endif %}
+                {% if yoy and yoy.get('hr_median') is not none %}
+                <span style="color:#666;font-size:12px;">去年同期：心率 {{ yoy.get('current_hr')|int }} vs {{ yoy.get('hr_median')|int }} bpm{% if yoy.get('pace_median_sec') is not none %}，配速 {{ yoy.get('current_pace_sec')|format_pace }} vs {{ yoy.get('pace_median_sec')|format_pace }}{% endif %}</span>
                 {% endif %}
             </span>
         </div>

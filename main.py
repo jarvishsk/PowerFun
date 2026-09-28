@@ -87,6 +87,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PowerFun")
 
+# LLM prompt 缓存版本号：prompt 结构变更时 +1，旧版本缓存视为无效
+LLM_PROMPT_VERSION = 2
+
 
 def parse_args():
     """解析命令行参数"""
@@ -137,6 +140,8 @@ def parse_args():
                         help="仅生成 PDF 报告（从已有 HTML 转换，不重新分析数据）")
     parser.add_argument("--user-note", type=str, default=None,
                         help="跑者体感备注（仅 --deep-analyze 模式有效，将与客观数据一起提交给 AI 综合分析）")
+    parser.add_argument("--backfill-since", type=str, default=None,
+                        help="强制从该日期起回溯拉取历史数据（YYYY-MM-DD），与现有缓存合并")
 
     return parser.parse_args()
 
@@ -271,20 +276,26 @@ def _user_note_hash(user_note: str) -> str:
 def _read_llm_cache(cache_path, user_note: str):
     """读取 LLM 缓存。命中返回 (content, model)，未命中返回 None
 
-    命中条件：缓存存在且（本次未传 --user-note 或 hash 与缓存一致）
+    命中条件：缓存存在、prompt_version 与当前版本一致，
+    且（本次未传 --user-note 或 hash 与缓存一致）
     """
     if cache_path is None or not cache_path.exists():
         return None
     try:
         lines = cache_path.read_text(encoding='utf-8').split('\n')
-        if len(lines) < 4:
+        # 新格式 frontmatter：user_note_hash / model / prompt_version + 空行 + 正文
+        if len(lines) < 5:
             return None
         if not lines[0].startswith('user_note_hash: ') or not lines[1].startswith('model: '):
+            return None
+        if not lines[2].startswith('prompt_version: '):
+            return None
+        if lines[2].split(': ', 1)[1].strip() != str(LLM_PROMPT_VERSION):
             return None
         if user_note and lines[0].split(': ', 1)[1] != _user_note_hash(user_note):
             return None
         model = lines[1].split(': ', 1)[1]
-        content = '\n'.join(lines[3:])
+        content = '\n'.join(lines[4:])
         return content, model
     except Exception as e:
         logger.warning(f"LLM 缓存读取失败，忽略缓存: {e}")
@@ -292,12 +303,13 @@ def _read_llm_cache(cache_path, user_note: str):
 
 
 def _write_llm_cache(cache_path, user_note: str, model: str, content: str) -> None:
-    """写入 LLM 缓存（frontmatter 两行 + 正文）"""
+    """写入 LLM 缓存（frontmatter 三行 + 正文）"""
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(
             f"user_note_hash: {_user_note_hash(user_note)}\n"
             f"model: {model}\n"
+            f"prompt_version: {LLM_PROMPT_VERSION}\n"
             f"\n"
             f"{content}",
             encoding='utf-8',
@@ -816,8 +828,16 @@ def _main_inner(args):
                 sys.exit(1)
 
         logger.info("Step 2/10: 拉取跑步数据...")
+        # --backfill-since：强制从指定日期起回溯拉取，与现有缓存合并
+        backfill_start = None
+        if args.backfill_since:
+            try:
+                backfill_start = datetime.strptime(args.backfill_since, "%Y-%m-%d")
+            except ValueError:
+                logger.error(f"--backfill-since 日期格式错误: {args.backfill_since}（应为 YYYY-MM-DD）")
+                sys.exit(1)
         try:
-            activities = fetcher.fetch_with_retry()
+            activities = fetcher.fetch_with_retry(force_start_date=backfill_start)
             logger.info(f"✅ 成功拉取 {len(activities)} 条活动")
         except Exception as e:
             logger.error(f"数据拉取失败: {e}")

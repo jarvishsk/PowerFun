@@ -722,10 +722,13 @@ class ReportGenerator:
             </div>
         </div>
 
+        {% set vr_gct_trend_json = charts_json.get('vr_gct_trend', 'null') %}
+        {% if vr_gct_trend_json and vr_gct_trend_json != 'null' %}
         <div class="section">
-            <h2 class="section-title"><span class="icon">📏</span>距离趋势</h2>
-            <div id="chart-distance" class="chart-container"></div>
+            <h2 class="section-title"><span class="icon">📈</span>垂直振幅比 & 触地时间趋势</h2>
+            <div id="chart-vr-gct" class="chart-container"></div>
         </div>
+        {% endif %}
 
         {% if has_training_effect %}
         <div class="section">
@@ -833,7 +836,7 @@ class ReportGenerator:
         const hr_zone_pie = {{ charts_json['hr_zone_pie'] | safe }};
         const category_pie = {{ charts_json['category_pie'] | safe }};
         const hr_zone_stacked = {{ charts_json['hr_zone_stacked'] | safe }};
-        const distance_trend = {{ charts_json.get('distance_trend', 'null') | safe }};
+        const vr_gct_trend = {{ charts_json.get('vr_gct_trend', 'null') | safe }};
         const hr_distribution = {{ charts_json.get('hr_distribution', 'null') | safe }};
         const training_effect = {{ charts_json.get('training_effect', 'null') | safe }};
         const power_distribution = {{ charts_json.get('power_distribution', 'null') | safe }};
@@ -913,8 +916,8 @@ class ReportGenerator:
         if (hr_zone_stacked && hr_zone_stacked.data) {
             Plotly.newPlot('chart-hr-stacked', hr_zone_stacked.data, hr_zone_stacked.layout, {responsive: true});
         }
-        if (distance_trend && distance_trend.data) {
-            Plotly.newPlot('chart-distance', distance_trend.data, distance_trend.layout, {responsive: true});
+        if (vr_gct_trend && vr_gct_trend.data) {
+            Plotly.newPlot('chart-vr-gct', vr_gct_trend.data, vr_gct_trend.layout, {responsive: true});
         }
         if (hr_distribution && hr_distribution.data) {
             Plotly.newPlot('chart-hr-dist', hr_distribution.data, hr_distribution.layout, {responsive: true});

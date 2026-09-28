@@ -232,8 +232,12 @@ class GarminDataFetcher:
             logger.error(f"拉取活动详情失败 (id={activity_id}): {e}")
             raise
 
-    def fetch_all_new(self, max_pages: int = 200) -> list[dict]:
+    def fetch_all_new(self, max_pages: int = 200, force_start_date: Optional[datetime] = None) -> list[dict]:
         """智能拉取：首次全部，后续增量
+
+        Args:
+            max_pages: 最大分页数
+            force_start_date: 强制起始日期（回溯拉取），为 None 时按状态文件增量拉取
 
         读取状态文件判断上次拉取时间，只拉取新数据。
         自动处理分页。
@@ -241,16 +245,18 @@ class GarminDataFetcher:
         Returns:
             所有活动列表
         """
-        last_fetch = self._read_state()
-        start_date = None
-
-        if last_fetch and last_fetch.get("last_date"):
-            start_date = datetime.fromisoformat(last_fetch["last_date"])
-            logger.info(f"增量拉取: {start_date.strftime('%Y-%m-%d')} 之后")
+        if force_start_date is not None:
+            start_date = force_start_date
+            logger.info(f"回溯拉取: {start_date.strftime('%Y-%m-%d')} 之后")
         else:
-            # 首次拉取：从 2015-01-01 开始（覆盖所有历史数据）
-            start_date = datetime(2015, 1, 1)
-            logger.info("首次拉取: 获取全部历史数据 (2015-01-01 至今)")
+            last_fetch = self._read_state()
+            if last_fetch and last_fetch.get("last_date"):
+                start_date = datetime.fromisoformat(last_fetch["last_date"])
+                logger.info(f"增量拉取: {start_date.strftime('%Y-%m-%d')} 之后")
+            else:
+                # 首次拉取：从 2015-01-01 开始（覆盖所有历史数据）
+                start_date = datetime(2015, 1, 1)
+                logger.info("首次拉取: 获取全部历史数据 (2015-01-01 至今)")
 
         all_activities = []
         page = 1
@@ -314,11 +320,15 @@ class GarminDataFetcher:
 
         return all_activities
 
-    def fetch_with_retry(self, max_retries: int = None) -> list[dict]:
+    def fetch_with_retry(self, max_retries: int = None, force_start_date: Optional[datetime] = None) -> list[dict]:
         """带重试和限流处理的数据拉取
 
         429 限流: 等待 1 小时 + 指数退避，最多 3 次重试
         其他错误: 指数退避重试
+
+        Args:
+            max_retries: 最大重试次数
+            force_start_date: 强制起始日期（回溯拉取），为 None 时按状态文件增量拉取
 
         Returns:
             活动列表
@@ -327,7 +337,7 @@ class GarminDataFetcher:
 
         for attempt in range(max_retries):
             try:
-                return self.fetch_all_new()
+                return self.fetch_all_new(force_start_date=force_start_date)
             except httpx.HTTPStatusError as e:
                 if e.response is not None and e.response.status_code == 429:
                     wait = DEFAULT_CONFIG["rate_limit_wait_sec"] * (2 ** attempt)

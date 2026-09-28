@@ -28,6 +28,7 @@ metadata:
 | 强制重新生成（覆盖缓存） | 以上命令加 `--force` |
 | 首次使用（需账号密码） | `python3 main.py --email EMAIL --password PASSWORD` |
 | 仅生成 PDF（从已有 HTML 转换） | `python3 main.py --pdf-only` |
+| 补拉历史数据 | `python3 main.py --backfill-since 2025-01-01` |
 
 > `--load-parquet` 需要已存在的 `~/Documents/Run/running_data.parquet`，首次使用先完整跑一次 `python3 main.py`。
 > 冷启动：先看 `~/Projects/skills/PowerFun/.data/garmin_tokens/` 是否有 token，没有则需用户提供 Garmin 账号密码。
