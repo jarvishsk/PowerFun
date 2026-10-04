@@ -259,50 +259,43 @@ class DeepRunAnalyzer:
         
         # 温区分桶匹配（三档：<15℃ / 15-25℃ / >25℃）
         target_bucket = self._get_temp_bucket(row)
-        if 'min_temperature' in df_same.columns and target_bucket is not None:
-            df_same = df_same.copy()
-            df_same['_temp_bucket'] = df_same.apply(
-                lambda r: self._get_temp_bucket(r), axis=1
-            )
-            # 同时过滤掉无温区的记录，避免把缺失温度误判为冷天
-            df_same = df_same[df_same['_temp_bucket'].notna()]
-            df_same = df_same[df_same['_temp_bucket'] == target_bucket]
-        
-        # 90天滚动窗口（取本次日期前90天内的数据）
-        if self.target_date is not None:
-            target_ts = pd.Timestamp(self.target_date)
-            cutoff_ts = target_ts - pd.Timedelta(days=90)
-            df_same = df_same[df_same['date'] >= cutoff_ts]
-            df_same = df_same.sort_values('date', ascending=False)
-        
-        # 如果90天内数据不足（<3次），放宽到180天
-        if len(df_same) < 3:
-            if self.target_date is not None:
-                target_ts = pd.Timestamp(self.target_date)
-                cutoff_ts = target_ts - pd.Timedelta(days=180)
-                df_same = df[df['_category_norm'] == category_norm] if category_norm and '_category_norm' in df.columns else df
-                if activity_id:
-                    df_same = df_same[df_same['activity_id'] != activity_id]
-                df_same = df_same[df_same['date'] <= target_ts]
-                df_same = df_same[df_same['date'] >= cutoff_ts]
-                df_same = df_same.copy()
-                df_same['_temp_bucket'] = df_same.apply(lambda r: self._get_temp_bucket(r), axis=1)
-                # 无温区记录不进入基线
-                df_same = df_same[df_same['_temp_bucket'].notna()]
-                if target_bucket is not None:
-                    df_same = df_same[df_same['_temp_bucket'] == target_bucket]
-                df_same = df_same.sort_values('date', ascending=False)
-        
-        # 如果180天仍不足（<3次），放宽温区限制（同类型不限温区，上限365天）
-        if len(df_same) < 3 and self.target_date is not None:
-            target_ts = pd.Timestamp(self.target_date)
-            cutoff_ts = target_ts - pd.Timedelta(days=365)
-            df_same = df[df['_category_norm'] == category_norm] if category_norm and '_category_norm' in df.columns else df
+
+        # 中位数基线放宽链（PRD F2：保时效优先）：90天同温区 → 90天不限温区 → 180天不限温区
+        target_ts = pd.Timestamp(self.target_date) if self.target_date is not None else None
+
+        def _base_candidates() -> pd.DataFrame:
+            """同类型候选，排除本次与目标日之后的数据"""
+            d = df[df['_category_norm'] == category_norm] if (category_norm and '_category_norm' in df.columns) else df
             if activity_id:
-                df_same = df_same[df_same['activity_id'] != activity_id]
-            df_same = df_same[df_same['date'] <= target_ts]
-            df_same = df_same[df_same['date'] >= cutoff_ts]
-            df_same = df_same.sort_values('date', ascending=False)
+                d = d[d['activity_id'] != activity_id]
+            elif target_ts is not None:
+                d = d[d['date'] != target_ts]
+            if target_ts is not None:
+                d = d[d['date'] <= target_ts]
+            return d
+
+        baseline_scope = None
+        if target_ts is not None:
+            for window_days, scope in ((90, 'same_temp'), (90, 'all_temp'), (180, 'all_temp')):
+                d = _base_candidates()
+                d = d[d['date'] >= target_ts - pd.Timedelta(days=window_days)]
+                if 'min_temperature' in d.columns and 'max_temperature' in d.columns:
+                    d = d.copy()
+                    d['_temp_bucket'] = d.apply(lambda r: self._get_temp_bucket(r), axis=1)
+                    # 无温区记录不进入基线，避免把缺失温度误判为冷天
+                    d = d[d['_temp_bucket'].notna()]
+                    if scope == 'same_temp' and target_bucket is not None:
+                        d = d[d['_temp_bucket'] == target_bucket]
+                if len(d) >= 3:
+                    df_same = d.sort_values('date', ascending=False)
+                    baseline_scope = scope
+                    break
+            else:
+                df_same = pd.DataFrame(columns=df.columns)
+        else:
+            # 无目标日期：不限制窗口与温区（保持原行为）
+            df_same = _base_candidates()
+            baseline_scope = 'all_temp'
         
         # 上限15次，避免样本过多时过度平均
         if len(df_same) > 15:
@@ -335,6 +328,7 @@ class DeepRunAnalyzer:
             'ability': {},
             'economy': {},
             'temp_bucket': target_bucket,
+            'baseline_scope': baseline_scope,
         }
         
         # 心率变化
@@ -438,8 +432,8 @@ class DeepRunAnalyzer:
         result['long_term'] = self._calc_long_term(row, category_norm, target_bucket, df)
         result['tech_changes'] = self._calc_tech_changes(row, df_same)
         
-        # 获取长期基线数据用于百分位和预期配速计算
-        df_long_term = self._get_long_term_baseline(row, category_norm, target_bucket, df)
+        # 获取长期基线数据用于百分位和预期配速计算（PRD F5：同口径三级选择）
+        df_long_term, _lt_scope = self._get_long_term_baseline(row, category_norm, target_bucket, df)
         result['percentile'] = self._calc_percentile(row, df_long_term)
         result['expected_pace'] = self._calc_expected_pace(row, df_long_term)
         
@@ -623,7 +617,8 @@ class DeepRunAnalyzer:
             })
         return changes
 
-    def _get_temp_bucket(self, row_data):
+    @staticmethod
+    def _get_temp_bucket(row_data):
         """获取温区桶（内部辅助方法）"""
         min_temp = row_data.get('min_temperature')
         max_temp = row_data.get('max_temperature')
@@ -636,11 +631,57 @@ class DeepRunAnalyzer:
             return 'mild'
         else:
             return 'hot'
+
+    # 基线新鲜度门槛：最新样本距目标日超过该天数视为过期（PRD F1）
+    BASELINE_FRESHNESS_DAYS = 45
+
+    def _select_baseline(self, df_window: pd.DataFrame, temp_bucket: Optional[str]) -> tuple:
+        """三级基线选择（PRD F1）：同温区(新鲜) → 不限温区(新鲜) → 数据不足
+
+        Args:
+            df_window: 已按时间窗口/类型筛选的候选样本（未做温区筛选）
+            temp_bucket: 目标温区（None 表示目标无温区数据，跳过第一级）
+
+        Returns:
+            (df_baseline, baseline_scope, insufficient_reason)
+            采用时 scope 为 'same_temp'/'all_temp'，reason 为 None；
+            数据不足时返回 (空 DataFrame, None, '样本不足'/'基线过旧')
+        """
+        target_ts = pd.Timestamp(self.target_date)
+        df_temp = df_window.copy()
+        if 'min_temperature' in df_temp.columns and 'max_temperature' in df_temp.columns:
+            df_temp['_temp_bucket'] = df_temp.apply(lambda r: self._get_temp_bucket(r), axis=1)
+            # 无温区记录不进入基线，避免把缺失温度误判为冷天
+            df_temp = df_temp[df_temp['_temp_bucket'].notna()]
+
+        def _fresh(d: pd.DataFrame) -> bool:
+            """最新样本距目标日 ≤45 天（PRD F1 新鲜度门槛）"""
+            return (target_ts - d['date'].max()).days <= self.BASELINE_FRESHNESS_DAYS
+
+        # 1. 窗口内同温区：≥3 次且新鲜
+        if temp_bucket is not None and '_temp_bucket' in df_temp.columns:
+            d_same = df_temp[df_temp['_temp_bucket'] == temp_bucket]
+            if len(d_same) >= 3 and _fresh(d_same):
+                return d_same, 'same_temp', None
+
+        # 2. 窗口内不限温区：≥3 次且新鲜（跨温区基线）
+        if len(df_temp) >= 3 and _fresh(df_temp):
+            return df_temp, 'all_temp', None
+
+        # 3. 数据不足：区分样本不足(n<3) / 基线过旧(最新样本>45天)
+        if len(df_temp) >= 3:
+            return pd.DataFrame(), None, '基线过旧'
+        return pd.DataFrame(), None, '样本不足'
     
-    def _get_long_term_baseline(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> pd.DataFrame:
-        """获取长期基线数据（180天同类型同温区）"""
+    def _get_long_term_baseline(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> tuple:
+        """获取长期基线数据（PRD F5：三级基线选择 + 新鲜度门槛，口径与 _calc_long_term 一致）
+
+        Returns:
+            (df_baseline, baseline_scope)：数据不足（含基线过旧）时返回 (空 DataFrame, None)，
+            调用方 percentile/expected_pace 据此返回 None（模板已有降级显示）
+        """
         if self.target_date is None:
-            return pd.DataFrame()
+            return pd.DataFrame(), None
         target_ts = pd.Timestamp(self.target_date)
         
         # 筛选同类型数据
@@ -658,25 +699,16 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选（缺失温区不进入基线）
-        df_filtered['_temp_bucket'] = df_filtered.apply(
-            lambda r: self._get_temp_bucket(r), axis=1
-        )
-        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
-        if temp_bucket is not None:
-            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
-        else:
-            df_same_temp = df_filtered
-        
-        # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
-        if len(df_same_temp) < 3:
-            df_same_temp = df_filtered
+        # 三级基线选择（PRD F5 同步 F1）：同温区(新鲜) → 不限温区(新鲜) → 数据不足
+        df_baseline, baseline_scope, _reason = self._select_baseline(df_filtered, temp_bucket)
+        if df_baseline.empty:
+            return pd.DataFrame(), None
         
         # 限制样本上限为30次
-        if len(df_same_temp) > 30:
-            df_same_temp = df_same_temp.sort_values('date', ascending=False).head(30)
+        if len(df_baseline) > 30:
+            df_baseline = df_baseline.sort_values('date', ascending=False).head(30)
         
-        return df_same_temp
+        return df_baseline, baseline_scope
     
     def _calc_short_term(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> dict:
         """计算短期状态（近30天同类型同温区）"""
@@ -700,19 +732,9 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选（缺失温区不进入基线）
-        df_filtered['_temp_bucket'] = df_filtered.apply(
-            lambda r: self._get_temp_bucket(r), axis=1
-        )
-        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
-        if temp_bucket is not None:
-            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
-        else:
-            df_same_temp = df_filtered
-        
-        # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
-        if len(df_same_temp) < 3:
-            df_same_temp = df_filtered
+        # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
+        # 近30天窗口天然满足 45 天新鲜度门槛
+        df_same_temp, baseline_scope, insufficient_reason = self._select_baseline(df_filtered, temp_bucket)
         
         # 1次也能比，不返回"数据不足"
         if len(df_same_temp) < 1:
@@ -720,7 +742,8 @@ class DeepRunAnalyzer:
                 'window_days': 30,
                 'sample_size': len(df_same_temp),
                 'temp_bucket': temp_bucket,
-                'message': '数据不足',
+                'baseline_scope': baseline_scope,
+                'message': insufficient_reason or '样本不足',
             }
         
         # 计算中位数
@@ -751,10 +774,7 @@ class DeepRunAnalyzer:
         pace_verdict = '更快' if pace_diff < -5 else ('更慢' if pace_diff > 5 else '持平')
         eff_verdict = '更经济' if eff_diff > 3 else ('更费力' if eff_diff < -3 else '持平')
         
-        if temp_bucket is None or len(df_same_temp) > len(df_filtered[df_filtered['_temp_bucket'] == temp_bucket]):
-            temp_bucket_label = 'all'
-        else:
-            temp_bucket_label = temp_bucket
+        temp_bucket_label = 'all' if baseline_scope == 'all_temp' else temp_bucket
 
         # 当前值与基线值（供模板渲染数据解释；0/NaN 视为数据不足）
         def _clean_num(val):
@@ -766,6 +786,7 @@ class DeepRunAnalyzer:
             'window_days': 30,
             'sample_size': len(df_same_temp),
             'temp_bucket': temp_bucket_label,
+            'baseline_scope': baseline_scope,
             'hr': {'median': hr_median},
             'pace_median': pace_median,
             'efficiency_median': efficiency_median,
@@ -805,19 +826,8 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
-        # 温区筛选（缺失温区不进入基线）
-        df_filtered['_temp_bucket'] = df_filtered.apply(
-            lambda r: self._get_temp_bucket(r), axis=1
-        )
-        df_filtered = df_filtered[df_filtered['_temp_bucket'].notna()]
-        if temp_bucket is not None:
-            df_same_temp = df_filtered[df_filtered['_temp_bucket'] == temp_bucket]
-        else:
-            df_same_temp = df_filtered
-        
-        # 降级策略：同类型同温区 < 3 次 → 放宽为同类型不限温区
-        if len(df_same_temp) < 3:
-            df_same_temp = df_filtered
+        # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
+        df_same_temp, baseline_scope, insufficient_reason = self._select_baseline(df_filtered, temp_bucket)
         
         # 限制样本上限为30次
         if len(df_same_temp) > 30:
@@ -829,51 +839,61 @@ class DeepRunAnalyzer:
                 'sample_size': len(df_same_temp),
                 'months_available': 0,
                 'verdict': '数据不足',
+                'message': insufficient_reason,
                 'yoy': yoy,
             }
         
-        # 按月分组，计算每月中位数（使用 .copy() 避免 SettingWithCopyWarning）
+        # 按月分组，计算每月中位数与月样本数（使用 .copy() 避免 SettingWithCopyWarning）
         df_same_temp = df_same_temp.copy()
         df_same_temp['year_month'] = df_same_temp['date'].dt.to_period('M')
-        monthly_stats = df_same_temp.groupby('year_month').agg({
-            'avg_hr': 'median',
-            'avg_pace_sec': 'median',
-        }).reset_index()
+        monthly_stats = df_same_temp.groupby('year_month').agg(
+            avg_hr=('avg_hr', 'median'),
+            avg_pace_sec=('avg_pace_sec', 'median'),
+            count=('avg_pace_sec', 'size'),
+        ).reset_index()
         
         # 过滤掉无效值
         monthly_stats = monthly_stats.dropna(subset=['avg_hr', 'avg_pace_sec'])
         
-        # 至少需要3个月有数据
-        if len(monthly_stats) < 3:
+        # 回归只纳入每月≥2样本的月份（PRD F1：单月单样本不进回归，样本总数报告不变）
+        regress_stats = monthly_stats[monthly_stats['count'] >= 2]
+        
+        # 剔除后至少需要3个有效月份
+        if len(regress_stats) < 3:
             return {
                 'window_days': 180,
                 'sample_size': len(df_same_temp),
                 'months_available': len(monthly_stats),
+                'baseline_scope': baseline_scope,
                 'verdict': '数据不足',
+                'message': '样本不足',
                 'yoy': yoy,
             }
         
-        # 准备线性回归数据
-        months_numeric = np.arange(len(monthly_stats))
-        hr_values = monthly_stats['avg_hr'].values
-        pace_values = monthly_stats['avg_pace_sec'].values
+        # 准备线性回归数据：x 轴用真实月份间隔（PRD F1，修正原月份序号当 x 轴导致的荒谬斜率）
+        months_numeric = np.array(
+            [(p - regress_stats['year_month'].iloc[0]).n for p in regress_stats['year_month']],
+            dtype=float,
+        )
+        hr_values = regress_stats['avg_hr'].values
+        pace_values = regress_stats['avg_pace_sec'].values
         
         # 计算线性回归斜率（单位：每月变化）
         hr_slope = np.polyfit(months_numeric, hr_values, 1)[0] if len(hr_values) > 1 else 0
         pace_slope = np.polyfit(months_numeric, pace_values, 1)[0] if len(pace_values) > 1 else 0
         
-        # 计算效率斜率
+        # 计算效率斜率（与心率/配速共用同一 x 轴）
         efficiency_values = []
-        for _, r in monthly_stats.iterrows():
+        for _, r in regress_stats.iterrows():
             if r['avg_pace_sec'] > 0 and r['avg_hr'] > 0:
                 efficiency_values.append(3600000.0 / (r['avg_pace_sec'] * r['avg_hr']))
             else:
                 efficiency_values.append(np.nan)
         efficiency_values = np.array(efficiency_values)
-        efficiency_values = efficiency_values[~np.isnan(efficiency_values)]
+        eff_mask = ~np.isnan(efficiency_values)
         
-        if len(efficiency_values) > 1:
-            efficiency_slope = np.polyfit(np.arange(len(efficiency_values)), efficiency_values, 1)[0]
+        if eff_mask.sum() > 1:
+            efficiency_slope = np.polyfit(months_numeric[eff_mask], efficiency_values[eff_mask], 1)[0]
         else:
             efficiency_slope = 0
         
@@ -919,10 +939,15 @@ class DeepRunAnalyzer:
             verdict = '稳定'
             reason = '各项指标变化在正常范围内'
         
+        # 跨温区基线标注（PRD F1）
+        if baseline_scope == 'all_temp':
+            reason = f'{reason}（跨温区基线）'
+        
         return {
             'window_days': 180,
             'sample_size': len(df_same_temp),
             'months_available': len(monthly_stats),
+            'baseline_scope': baseline_scope,
             'trend': {
                 'hr_slope_per_month': round(float(hr_slope), 2),
                 'pace_slope_per_month': round(float(pace_slope), 2),
@@ -1390,7 +1415,7 @@ class LLMReportGenerator:
             if 'hr_slope_per_month' in trend:
                 parts.append(f"长期趋势（近{lt['window_days']}天）：心率月变化{trend['hr_slope_per_month']:+.1f}bpm，配速月变化{trend['pace_slope_per_month']:+.1f}秒，判定{lt['verdict']}")
             elif lt.get('verdict') == '数据不足':
-                parts.append(f"长期趋势（近{lt['window_days']}天）：{lt['verdict']}")
+                parts.append(f"长期趋势（近{lt['window_days']}天）：{lt.get('message') or lt['verdict']}")
         
         # 去年同期对比（无数据时不出现，prompt 里不提示"没数据"）
         yoy = lt.get('yoy', {}) if lt else {}
@@ -1448,7 +1473,9 @@ class LLMReportGenerator:
         sample_size = laps.get('sample_size', 0)
         
         if sample_size > 0:
-            lines.append(f'（对比前 {sample_size} 次同类型跑步）')
+            baseline_note = laps.get('baseline_note')
+            note_str = f'（{baseline_note}）' if baseline_note else ''
+            lines.append(f'（对比前 {sample_size} 次同类型跑步{note_str}）')
         
         lines.append('| 圈次 | 配速 | 心率 | 功率 | 历史中位配速 | 历史P20配速 | 历史P80配速 |')
         lines.append('|------|------|------|------|------------|------------|------------|')

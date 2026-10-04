@@ -88,7 +88,7 @@ logging.basicConfig(
 logger = logging.getLogger("PowerFun")
 
 # LLM prompt 缓存版本号：prompt 结构变更时 +1，旧版本缓存视为无效
-LLM_PROMPT_VERSION = 2
+LLM_PROMPT_VERSION = 3
 
 
 def parse_args():
@@ -193,8 +193,15 @@ def _export_csv(df: pd.DataFrame, csv_path: Path) -> None:
 
 
 def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id, N: int,
-                               fetcher) -> list:
-    """加载与目标跑步同类型的最近 N 次历史分圈数据"""
+                               fetcher, temp_bucket=None) -> tuple:
+    """加载历史分圈基线（PRD F3）：近90天同温区 → 近90天跨温区 → 最近N次同类型（兜底）
+
+    Returns:
+        (recent_laps, baseline_note)：recent_laps 为历史分圈数据列表，
+        baseline_note 为基线构成标注（如「同温区 8 次」「跨温区 9 次」「跨全年 12 次」）
+    """
+    from src.deep_analyzer import DeepRunAnalyzer
+
     if category and 'category' in df.columns:
         df_same = df[df['category'] == category]
     else:
@@ -203,17 +210,47 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
     df_same = df_same[df_same['activity_id'] != activity_id]
     # 排除目标日期之后的所有数据，同时允许同日期更早的记录作为历史基线
     df_same = df_same[df_same['date'] <= target_ts]
+
+    # 基线选择（PRD F3）：近90天同温区(≥5次) → 近90天跨温区(≥5次) → 最近N次同类型(兜底)
+    cutoff_90 = target_ts - pd.Timedelta(days=90)
+    df_90 = df_same[df_same['date'] >= cutoff_90]
+
+    def _with_temp_bucket(d: pd.DataFrame) -> pd.DataFrame:
+        """计算温区桶并剔除无温区记录（与 deep_analyzer._get_temp_bucket 同口径）"""
+        d = d.copy()
+        d['_temp_bucket'] = d.apply(lambda r: DeepRunAnalyzer._get_temp_bucket(r), axis=1)
+        return d[d['_temp_bucket'].notna()]
+
+    df_sel = None
+    baseline_note = ''
+    if 'min_temperature' in df_same.columns and 'max_temperature' in df_same.columns:
+        if temp_bucket is not None:
+            d = _with_temp_bucket(df_90)
+            d = d[d['_temp_bucket'] == temp_bucket]
+            if len(d) >= 5:
+                df_sel = d
+                baseline_note = f'同温区 {len(d)} 次'
+        if df_sel is None:
+            d = _with_temp_bucket(df_90)
+            if len(d) >= 5:
+                df_sel = d
+                baseline_note = f'跨温区 {len(d)} 次'
+    if df_sel is None:
+        # 兜底：最近 N 次同类型（跨全年）
+        df_sel = df_same.sort_values('date', ascending=False).head(N)
+        baseline_note = f'跨全年 {len(df_sel)} 次'
+
     # 按日期排序，取最近 N 次
-    df_same = df_same.sort_values('date', ascending=False).head(N)
+    df_sel = df_sel.sort_values('date', ascending=False).head(N)
 
     recent_laps = []
-    for _, row in df_same.iterrows():
+    for _, row in df_sel.iterrows():
         hist_id = row.get('activity_id')
         if hist_id:
             hist_laps = fetcher._load_lap_cache(hist_id)
             if hist_laps:
                 recent_laps.append(hist_laps)
-    return recent_laps
+    return recent_laps, baseline_note
 
 
 def _build_pa_hr_history_chart(df: pd.DataFrame, activity_id, target_ts,
@@ -388,14 +425,17 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
             # 图表层会按分类总样本和每公里样本阈值过滤，N 取足够大以保证 per-km 样本量
             category = target_run.get('category', '')
             N = DEFAULT_CONFIG.get('deep_lap_history_n', 100)
-            recent_laps = _load_similar_lap_history(
-                df, category, target_ts, activity_id, N, fetcher_obj
+            temp_bucket = DeepRunAnalyzer._get_temp_bucket(target_run)
+            recent_laps, lap_baseline_note = _load_similar_lap_history(
+                df, category, target_ts, activity_id, N, fetcher_obj,
+                temp_bucket=temp_bucket,
             )
 
             # 使用 DeepRunAnalyzer 的 _analyze_laps 方法
             analyzer_for_laps = DeepRunAnalyzer(df, target_date=target_run.get('date'),
                                                  max_hr=max_hr, resting_hr=resting_hr)
             lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
+            lap_data['baseline_note'] = lap_baseline_note
 
             # 生成分圈配速图和心率图（需求 4：拆分为两张图）
             try:
@@ -622,13 +662,16 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                 lap_count = len(current_laps)
                 category = latest_run.get('category', '')
                 N = DEFAULT_CONFIG.get('deep_lap_history_n', 100)
-                recent_laps = _load_similar_lap_history(
-                    df, category, target_ts, activity_id, N, temp_fetcher
+                temp_bucket = DeepRunAnalyzer._get_temp_bucket(latest_run)
+                recent_laps, lap_baseline_note = _load_similar_lap_history(
+                    df, category, target_ts, activity_id, N, temp_fetcher,
+                    temp_bucket=temp_bucket,
                 )
 
                 analyzer_for_laps = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
                                                      max_hr=max_hr, resting_hr=resting_hr)
                 lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
+                lap_data['baseline_note'] = lap_baseline_note
 
                 try:
                     cat_name = latest_run.get('category_name', '跑步')

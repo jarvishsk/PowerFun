@@ -237,6 +237,7 @@ ANALYSIS_HTML_TEMPLATE = """
     {% if lap_pace_chart_html or lap_hr_chart_html %}
     <div class="section">
         <h2>📊 每公里配速</h2>
+        {% if lap_baseline_note %}<p style="color:#999;font-size:12px;margin:-2px 0 10px;">对比前 {{ lap_sample_size }} 次同类型跑步（{{ lap_baseline_note }}）</p>{% endif %}
         <div id="lap-pace-chart" style="border-radius:8px;overflow:hidden;"></div>
 
     </div>
@@ -461,7 +462,7 @@ ANALYSIS_HTML_TEMPLATE = """
     <div class="section">
         <h2>📈 状态与趋势</h2>
         
-        {% if comparison.get('short_term') and comparison.short_term.get('message') != '数据不足' %}
+        {% if comparison.get('short_term') and not comparison.short_term.get('message') %}
         <div class="status-row">
             <span class="status-label">今日状态（{{ comparison.short_term.sample_size }} 次同类型）</span>
             <span class="status-value"></span>
@@ -469,20 +470,20 @@ ANALYSIS_HTML_TEMPLATE = """
         {% set st = comparison.short_term %}
         <div class="status-row">
             <span class="status-label">  心率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_hr == '持平' else ('good' if '轻松' in st.verdict_hr else 'bad') }}">{{ st.verdict_hr }}</span>{% if st.get('hr_current') is not none and st.get('hr_baseline') is not none %}　当前 {{ st.get('hr_current')|int }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('hr_baseline')|int }}（{{ (st.get('hr_current') - st.get('hr_baseline'))|signed }}）{% endif %}</span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_hr == '持平' else ('good' if '轻松' in st.verdict_hr else 'bad') }}">{{ st.verdict_hr }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('hr_current') is not none and st.get('hr_baseline') is not none %}　当前 {{ st.get('hr_current')|int }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('hr_baseline')|int }}（{{ (st.get('hr_current') - st.get('hr_baseline'))|signed }}）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  配速</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_pace == '持平' else ('good' if '快' in st.verdict_pace else 'bad') }}">{{ st.verdict_pace }}</span>{% if st.get('pace_current_sec') is not none and st.get('pace_baseline_sec') is not none %}　当前 {{ st.get('pace_current_sec')|format_pace }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('pace_baseline_sec')|format_pace }}（{{ (st.get('pace_current_sec') - st.get('pace_baseline_sec'))|signed }} 秒）{% endif %}</span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_pace == '持平' else ('good' if '快' in st.verdict_pace else 'bad') }}">{{ st.verdict_pace }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('pace_current_sec') is not none and st.get('pace_baseline_sec') is not none %}　当前 {{ st.get('pace_current_sec')|format_pace }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('pace_baseline_sec')|format_pace }}（{{ (st.get('pace_current_sec') - st.get('pace_baseline_sec'))|signed }} 秒）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  效率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span>{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
         </div>
         {% elif comparison.get('short_term') %}
         <div class="status-row">
             <span class="status-label">今日状态</span>
-            <span class="status-value"><span class="trend-badge neutral">数据不足{% if comparison.short_term.get('sample_size') is not none %}（同类型样本 {{ comparison.short_term.sample_size }} 个）{% endif %}</span></span>
+            <span class="status-value"><span class="trend-badge neutral">{{ comparison.short_term.get('message') or '数据不足' }}{% if comparison.short_term.get('sample_size') is not none %}（同类型样本 {{ comparison.short_term.sample_size }} 个）{% endif %}</span></span>
         </div>
         {% else %}
         <div class="status-row">
@@ -511,7 +512,7 @@ ANALYSIS_HTML_TEMPLATE = """
         {% elif comparison.get('long_term') %}
         <div class="status-row">
             <span class="status-label">长期趋势</span>
-            <span class="status-value"><span class="trend-badge neutral">数据不足（样本积累中）</span></span>
+            <span class="status-value"><span class="trend-badge neutral">{{ lt.get('message') or '数据不足（样本积累中）' }}</span></span>
         </div>
         {% endif %}
         
@@ -639,6 +640,8 @@ class AnalysisReportGenerator:
             'lap_pace_chart_html': lap_pace_chart_html,
             'lap_hr_chart_html': lap_hr_chart_html,
             'lap_count': lap_count,
+            'lap_baseline_note': (analysis_data.get('laps') or {}).get('baseline_note', ''),
+            'lap_sample_size': (analysis_data.get('laps') or {}).get('sample_size', 0),
             'pa_hr': pa_hr,
             'pa_hr_history': pa_hr_history,
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
