@@ -643,9 +643,9 @@ class DeepRunAnalyzer:
             temp_bucket: 目标温区（None 表示目标无温区数据，跳过第一级）
 
         Returns:
-            (df_baseline, baseline_scope, insufficient_reason)
+            (df_baseline, baseline_scope, insufficient_reason, max_sample)
             采用时 scope 为 'same_temp'/'all_temp'，reason 为 None；
-            数据不足时返回 (空 DataFrame, None, '样本不足'/'基线过旧')
+            数据不足时返回 (空 DataFrame, None, '样本不足'/'基线过旧', 各级尝试的最大样本数)
         """
         target_ts = pd.Timestamp(self.target_date)
         df_temp = df_window.copy()
@@ -658,20 +658,25 @@ class DeepRunAnalyzer:
             """最新样本距目标日 ≤45 天（PRD F1 新鲜度门槛）"""
             return (target_ts - d['date'].max()).days <= self.BASELINE_FRESHNESS_DAYS
 
+        # 记录各级尝试样本数，数据不足时报告最宽口径的实际样本数（占位行显示用）
+        max_sample = 0
+
         # 1. 窗口内同温区：≥3 次且新鲜
         if temp_bucket is not None and '_temp_bucket' in df_temp.columns:
             d_same = df_temp[df_temp['_temp_bucket'] == temp_bucket]
+            max_sample = max(max_sample, len(d_same))
             if len(d_same) >= 3 and _fresh(d_same):
-                return d_same, 'same_temp', None
+                return d_same, 'same_temp', None, len(d_same)
 
         # 2. 窗口内不限温区：≥3 次且新鲜（跨温区基线）
+        max_sample = max(max_sample, len(df_temp))
         if len(df_temp) >= 3 and _fresh(df_temp):
-            return df_temp, 'all_temp', None
+            return df_temp, 'all_temp', None, len(df_temp)
 
         # 3. 数据不足：区分样本不足(n<3) / 基线过旧(最新样本>45天)
         if len(df_temp) >= 3:
-            return pd.DataFrame(), None, '基线过旧'
-        return pd.DataFrame(), None, '样本不足'
+            return pd.DataFrame(), None, '基线过旧', max_sample
+        return pd.DataFrame(), None, '样本不足', max_sample
     
     def _get_long_term_baseline(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> tuple:
         """获取长期基线数据（PRD F5：三级基线选择 + 新鲜度门槛，口径与 _calc_long_term 一致）
@@ -700,7 +705,7 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
         # 三级基线选择（PRD F5 同步 F1）：同温区(新鲜) → 不限温区(新鲜) → 数据不足
-        df_baseline, baseline_scope, _reason = self._select_baseline(df_filtered, temp_bucket)
+        df_baseline, baseline_scope, _reason, _max_sample = self._select_baseline(df_filtered, temp_bucket)
         if df_baseline.empty:
             return pd.DataFrame(), None
         
@@ -734,13 +739,13 @@ class DeepRunAnalyzer:
         
         # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
         # 近30天窗口天然满足 45 天新鲜度门槛
-        df_same_temp, baseline_scope, insufficient_reason = self._select_baseline(df_filtered, temp_bucket)
+        df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, temp_bucket)
         
         # 1次也能比，不返回"数据不足"
         if len(df_same_temp) < 1:
             return {
                 'window_days': 30,
-                'sample_size': len(df_same_temp),
+                'sample_size': max_sample,
                 'temp_bucket': temp_bucket,
                 'baseline_scope': baseline_scope,
                 'message': insufficient_reason or '样本不足',
@@ -827,7 +832,7 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
         # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
-        df_same_temp, baseline_scope, insufficient_reason = self._select_baseline(df_filtered, temp_bucket)
+        df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, temp_bucket)
         
         # 限制样本上限为30次
         if len(df_same_temp) > 30:
@@ -836,7 +841,7 @@ class DeepRunAnalyzer:
         if len(df_same_temp) < 3:
             return {
                 'window_days': 180,
-                'sample_size': len(df_same_temp),
+                'sample_size': max_sample,
                 'months_available': 0,
                 'verdict': '数据不足',
                 'message': insufficient_reason,
@@ -1366,7 +1371,7 @@ class LLMReportGenerator:
 请生成包含以下 6 个小节的分析文字（小节标题格式 `## emoji 标题`，## 后一个空格、emoji 后一个空格，无其他连接符，标题文本与清单完全一致）：
 ## 🔥 本次跑步小结 / ## 🏃 强度与负荷分析 / ## ⚙️ 技术效率分析 / ## 📈 能力变化趋势 / ## 🔄 分圈表现分析 / ## 🎯 改进建议
 
-1. 本次跑步小结：2-3 句通俗有温度，末尾一句话提炼核心价值（易记锚点，如"用 Z1/Z2 的心率代价跑出接近 Z3 的配速输出"）
+1. 本次跑步小结：2-3 句通俗有温度的小结
 2. 强度与负荷分析：心率、功率、训练效果综合评价
 3. {tech_instruction}
 4. 能力变化趋势：基于历史对比解读
