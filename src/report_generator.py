@@ -506,7 +506,6 @@ class ReportGenerator:
 
         # 检查是否有训练效果数据
         has_training_effect = bool(charts.get('training_effect'))
-        has_power = bool(charts.get('power_distribution'))
 
         # jinja2 是事实依赖，缺失时给出明确错误
         if not HAS_JINJA2:
@@ -518,7 +517,7 @@ class ReportGenerator:
         html_content = self._render_jinja2(
             df, charts_json, stats, insights, table_data, charts,
             current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-            has_training_effect, has_power
+            has_training_effect
         )
 
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -528,7 +527,7 @@ class ReportGenerator:
 
     def _render_jinja2(self, df, charts_json, stats, insights, table_data, charts,
                        current_month_distance, total_dur_h, total_dur_m, pace_m, pace_s,
-                       has_training_effect, has_power) -> str:
+                       has_training_effect) -> str:
         """使用Jinja2模板渲染"""
         template_str = self._get_html_template()
         env = Environment(
@@ -545,7 +544,6 @@ class ReportGenerator:
             total_dur_h=total_dur_h, total_dur_m=total_dur_m,
             pace_m=pace_m, pace_s=pace_s,
             has_training_effect=has_training_effect,
-            has_power=has_power,
             version=load_version(),
         )
 
@@ -709,19 +707,6 @@ class ReportGenerator:
             </div>
         </div>
 
-        <div class="charts-row">
-            {% if has_power %}
-            <div class="section">
-                <h2 class="section-title"><span class="icon">⚡</span>功率分布</h2>
-                <div id="chart-power" class="chart-container"></div>
-            </div>
-            {% endif %}
-            <div class="section">
-                <h2 class="section-title"><span class="icon">💪</span>心率分布直方图</h2>
-                <div id="chart-hr-dist" class="chart-container"></div>
-            </div>
-        </div>
-
         {% set vr_gct_trend_json = charts_json.get('vr_gct_trend', 'null') %}
         {% if vr_gct_trend_json and vr_gct_trend_json != 'null' %}
         <div class="section">
@@ -753,23 +738,13 @@ class ReportGenerator:
         </div>
         {% endif %}
 
-        <div class="charts-row">
-            {% set speed_hr_scatter_json = charts_json.get('speed_hr_scatter', 'null') %}
-            {% if speed_hr_scatter_json and speed_hr_scatter_json != 'null' %}
-            <div class="section">
-                <h2 class="section-title"><span class="icon">🏃</span>速度-心率散点（颜色=气温）</h2>
-                <div id="chart-speed-hr-scatter" class="chart-container"></div>
-            </div>
-            {% endif %}
-
-            {% set speed_hr_temp_curves_json = charts_json.get('speed_hr_temp_curves', 'null') %}
-            {% if speed_hr_temp_curves_json and speed_hr_temp_curves_json != 'null' %}
-            <div class="section">
-                <h2 class="section-title"><span class="icon">🌡️</span>速度-心率温度分层曲线</h2>
-                <div id="chart-speed-hr-temp-curves" class="chart-container"></div>
-            </div>
-            {% endif %}
+        {% set temp_efficiency_cost_json = charts_json.get('temp_efficiency_cost', 'null') %}
+        {% if temp_efficiency_cost_json and temp_efficiency_cost_json != 'null' %}
+        <div class="section">
+            <h2 class="section-title"><span class="icon">🌡️</span>气温-效率代价</h2>
+            <div id="chart-temp-efficiency-cost" class="chart-container"></div>
         </div>
+        {% endif %}
 
         <div class="section">
             <h2 class="section-title"><span class="icon">🎯</span>训练结论与下一步</h2>
@@ -837,13 +812,10 @@ class ReportGenerator:
         const category_pie = {{ charts_json['category_pie'] | safe }};
         const hr_zone_stacked = {{ charts_json['hr_zone_stacked'] | safe }};
         const vr_gct_trend = {{ charts_json.get('vr_gct_trend', 'null') | safe }};
-        const hr_distribution = {{ charts_json.get('hr_distribution', 'null') | safe }};
         const training_effect = {{ charts_json.get('training_effect', 'null') | safe }};
-        const power_distribution = {{ charts_json.get('power_distribution', 'null') | safe }};
         const temp_hr_scatter = {{ charts_json.get('temp_hr_scatter', 'null') | safe }};
         const beats_per_km = {{ charts_json.get('beats_per_km', 'null') | safe }};
-        const speed_hr_scatter = {{ charts_json.get('speed_hr_scatter', 'null') | safe }};
-        const speed_hr_temp_curves = {{ charts_json.get('speed_hr_temp_curves', 'null') | safe }};
+        const temp_efficiency_cost = {{ charts_json.get('temp_efficiency_cost', 'null') | safe }};
 
         if (pace_hr_trend && pace_hr_trend.data) {
             Plotly.newPlot('chart-pace-hr', pace_hr_trend.data, pace_hr_trend.layout, {responsive: true});
@@ -919,17 +891,9 @@ class ReportGenerator:
         if (vr_gct_trend && vr_gct_trend.data) {
             Plotly.newPlot('chart-vr-gct', vr_gct_trend.data, vr_gct_trend.layout, {responsive: true});
         }
-        if (hr_distribution && hr_distribution.data) {
-            Plotly.newPlot('chart-hr-dist', hr_distribution.data, hr_distribution.layout, {responsive: true});
-        }
         {% if has_training_effect %}
         if (training_effect && training_effect.data) {
             Plotly.newPlot('chart-training-effect', training_effect.data, training_effect.layout, {responsive: true});
-        }
-        {% endif %}
-        {% if has_power %}
-        if (power_distribution && power_distribution.data) {
-            Plotly.newPlot('chart-power', power_distribution.data, power_distribution.layout, {responsive: true});
         }
         {% endif %}
 
@@ -939,11 +903,8 @@ class ReportGenerator:
         if (beats_per_km && beats_per_km.data) {
             Plotly.newPlot('chart-beats-per-km', beats_per_km.data, beats_per_km.layout, {responsive: true});
         }
-        if (speed_hr_scatter && speed_hr_scatter.data) {
-            Plotly.newPlot('chart-speed-hr-scatter', speed_hr_scatter.data, speed_hr_scatter.layout, {responsive: true});
-        }
-        if (speed_hr_temp_curves && speed_hr_temp_curves.data) {
-            Plotly.newPlot('chart-speed-hr-temp-curves', speed_hr_temp_curves.data, speed_hr_temp_curves.layout, {responsive: true});
+        if (temp_efficiency_cost && temp_efficiency_cost.data) {
+            Plotly.newPlot('chart-temp-efficiency-cost', temp_efficiency_cost.data, temp_efficiency_cost.layout, {responsive: true});
         }
 
         $(document).ready(function() {

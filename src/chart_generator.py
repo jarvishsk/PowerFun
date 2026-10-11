@@ -716,115 +716,6 @@ class ChartGenerator:
 
         return self._to_js_dict(fig.to_dict())
 
-    def create_power_distribution_chart(self, df: pd.DataFrame) -> Dict:
-        """
-        创建功率分布图
-        - 直方图 + 核密度估计
-        - 仅在有功率数据时显示
-        """
-        if df.empty or 'avg_power' not in df.columns or df['avg_power'].notna().sum() < 2:
-            return {}
-
-        power_data = df['avg_power'].dropna()
-
-        fig = go.Figure()
-
-        # 直方图
-        fig.add_trace(go.Histogram(
-            x=power_data.tolist(),
-            nbinsx=30,
-            name='功率分布',
-            marker_color='#4169E1',
-            opacity=0.7,
-            hovertemplate="功率: %{x:.0f} W<br>次数: %{y}<extra></extra>"
-        ))
-
-        # 添加统计线
-        mean_power = power_data.mean()
-        median_power = power_data.median()
-
-        # 平均线（红色虚线）- 靠左
-        fig.add_vline(x=mean_power, line_dash="dash", line_color="#FF6B6B")
-        fig.add_annotation(
-            x=mean_power - 5,   # 向左偏移 5W
-            y=0.95,
-            yref="paper",
-            text=f"平均: {mean_power:.0f}W",
-            showarrow=False,
-            font=dict(color="#FF6B6B", size=11),
-            xanchor="right"
-        )
-
-        # 中位数线（绿色点线）- 靠右
-        fig.add_vline(x=median_power, line_dash="dot", line_color="#32CD32")
-        fig.add_annotation(
-            x=median_power + 5,  # 向右偏移 5W
-            y=0.95,
-            yref="paper",
-            text=f"中位数: {median_power:.0f}W",
-            showarrow=False,
-            font=dict(color="#32CD32", size=11),
-            xanchor="left"
-        )
-
-        fig.update_layout(
-            **self._common_layout_style,
-            title=None,
-            xaxis=dict(title='平均功率 (W)'),
-            yaxis=dict(title='次数'),
-            height=400,
-            margin=dict(l=60, r=80, t=80, b=60),  # 增加右边和顶部边距
-            bargap=0.05,
-        )
-
-        return self._to_js_dict(fig.to_dict())
-
-    def create_hr_distribution_histogram(self, df: pd.DataFrame) -> Dict:
-        """
-        创建心率分布直方图
-        - 按心率区间着色
-        """
-        if df.empty or 'avg_hr' not in df.columns:
-            return {}
-
-        hr_data = df['avg_hr'].dropna()
-        if len(hr_data) < 5:
-            return {}
-
-        zone_colors = {
-            'Z1-有氧基础': _ZONE_COLORS['Z1'],
-            'Z2-有氧耐力': _ZONE_COLORS['Z2'],
-            'Z3-乳酸阈值': _ZONE_COLORS['Z3'],
-            'Z4-无氧耐力': _ZONE_COLORS['Z4'],
-            'Z5-最大强度': _ZONE_COLORS['Z5'],
-        }
-
-        fig = go.Figure()
-
-        # 按区间分堆
-        for zone, color in zone_colors.items():
-            zone_df = df[df['hr_zone'] == zone]
-            if not zone_df.empty:
-                fig.add_trace(go.Histogram(
-                    x=zone_df['avg_hr'].tolist(),
-                    name=zone,
-                    marker_color=color,
-                    opacity=0.8,
-                    hovertemplate=f"{zone}<br>心率: %{{x:.0f}} bpm<br>次数: %{{y}}<extra></extra>"
-                ))
-
-        fig.update_layout(
-            title=None,
-            xaxis=dict(title='平均心率 (bpm)'),
-            yaxis=dict(title='次数'),
-            barmode='stack',
-            height=400,
-            bargap=0.05,
-            **self._common_layout_style
-        )
-
-        return self._to_js_dict(fig.to_dict())
-
     def _prepare_temp_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """准备气温+心率+配速的衍生数据"""
         if df.empty:
@@ -1136,249 +1027,116 @@ class ChartGenerator:
         }
         return fig_dict
 
-    def create_speed_hr_scatter_chart(self, df: pd.DataFrame) -> Dict:
+    def create_temp_efficiency_cost_chart(self, df: pd.DataFrame) -> Dict:
         """
-        配速-心率散点图（颜色=气温）
-        - 横轴：配速 (min/km)，倒序（左慢右快）
-        - 纵轴：心率 (bpm)
-        - 颜色编码：连续色带映射气温
-        - 趋势线：线性回归（黑色虚线）
+        气温-效率代价图（散点 + 线性趋势线）
+        - X 轴：气温中值 (min+max)/2
+        - Y 轴：效率指数 3600000/(配速秒×心率)
+        - 散点按跑步类型着色（轻松跑/有氧耐力跑/LSD），近期点更深
+        - 趋势线标注：每升高 1°C 效率指数约降多少（折算同心率配速慢多少秒/km）
+        - 有效点 <10 时返回空（由模板条件渲染跳过）
         """
-        if df.empty:
+        temp_df = self._prepare_temp_data(df)
+        if temp_df.empty:
             return {}
 
-        df = df.copy()
-
-        # 计算配速 (min/km)
-        df = df[df['avg_pace_sec'] > 0].copy()
-        if df.empty:
+        # 只看三类有氧跑（比赛/强度跑会扭曲气温-效率关系）
+        aerobic_cats = ['easy_run', 'aerobic_run', 'lsd']
+        temp_df = temp_df[temp_df['category'].isin(aerobic_cats)].copy()
+        if len(temp_df) < 10:
             return {}
-        df['pace_min_km'] = df['avg_pace_sec'] / 60.0
 
-        # 计算气温
-        if 'min_temperature' in df.columns and 'max_temperature' in df.columns:
-            df = df[df['min_temperature'].notna() | df['max_temperature'].notna()].copy()
-            temp_mask = df['min_temperature'].notna() & df['max_temperature'].notna()
-            df.loc[temp_mask, 'avg_temperature'] = (
-                df.loc[temp_mask, 'min_temperature'] + df.loc[temp_mask, 'max_temperature']
-            ) / 2.0
-            only_min = df['min_temperature'].notna() & df['max_temperature'].isna()
-            df.loc[only_min, 'avg_temperature'] = df.loc[only_min, 'min_temperature']
-            only_max = df['max_temperature'].notna() & df['min_temperature'].isna()
-            df.loc[only_max, 'avg_temperature'] = df.loc[only_max, 'max_temperature']
+        temp_df = temp_df.sort_values('date').reset_index(drop=True)
+        temp_df['date_str'] = temp_df['date'].dt.strftime('%Y-%m-%d')
+
+        # 近期点更深：按时间顺序映射透明度 0.35（最旧）→ 0.95（最新）
+        n = len(temp_df)
+        if n > 1:
+            opacities = [0.35 + 0.60 * i / (n - 1) for i in range(n)]
         else:
-            return {}
+            opacities = [0.8]
+        temp_df['point_opacity'] = opacities
 
-        # 过滤异常值（使用 1%~99% 分位，样本过少时不过滤）
-        df = self._filter_pace_quantile(df[df['avg_temperature'].notna()])
-        df = df[df['avg_hr'] >= 60].copy()
-
-        if len(df) < 5:
-            return {}
-
-        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
-
-        fig = go.Figure()
-
-        # hover 信息
-        hover_texts = []
-        for _, row in df.iterrows():
-            power_info = f"<br>功率: {row['avg_power']:.0f} W" if pd.notna(row.get('avg_power')) else ''
-            hover_texts.append(
-                f"<b>{row.get('title', '')}</b><br>"
-                f"日期: {row['date_str']}<br>"
-                f"配速: {self._format_pace(row['avg_pace_sec'])}/km<br>"
-                f"心率: {row['avg_hr']:.0f} bpm<br>"
-                f"气温: {row['avg_temperature']:.0f}°C"
-                f"{power_info}"
-            )
-
-        # 色带范围：min/max 温度 ±2°C
-        temp_min = df['avg_temperature'].min()
-        temp_max = df['avg_temperature'].max()
-        cmin = temp_min - 2
-        cmax = temp_max + 2
-
-        fig.add_trace(go.Scatter(
-            x=df['pace_min_km'].tolist(),
-            y=df['avg_hr'].tolist(),
-            mode='markers',
-            marker=dict(
-                size=10,
-                color=df['avg_temperature'].tolist(),
-                colorscale='RdBu_r',
-                cmin=cmin,
-                cmax=cmax,
-                opacity=0.75,
-                colorbar=dict(title='气温(°C)', thickness=15, len=0.75),
-                symbol='circle',
-            ),
-            text=hover_texts,
-            hoverinfo='text',
-            name='数据点',
-        ))
-
-        # 线性回归趋势线（黑色虚线）
-        x_vals = df['pace_min_km'].values
-        y_vals = df['avg_hr'].values
-        if len(x_vals) >= 3:
-            coeffs = np.polyfit(x_vals, y_vals, 1)
-            x_range = np.linspace(x_vals.min(), x_vals.max(), 50)
-            y_fit = coeffs[0] * x_range + coeffs[1]
-            fig.add_trace(go.Scatter(
-                x=x_range.tolist(),
-                y=y_fit.tolist(),
-                mode='lines',
-                name='趋势线',
-                line=dict(color='#333333', width=2, dash='dash'),
-                hoverinfo='skip',
-                showlegend=True,
-            ))
-
-        # 动态配速范围（±5秒 = ±0.083分）
-        pace_min = df['pace_min_km'].min()
-        pace_max = df['pace_min_km'].max()
-        pad = 5.0 / 60.0  # 5秒
-        pace_lo = pace_max + pad  # 最慢+5秒
-        pace_hi = pace_min - pad  # 最快-5秒
-
-        fig.update_layout(
-            title=None,
-            xaxis=dict(
-                title='配速 (min/km)',
-                range=[pace_lo, pace_hi],  # 左慢右快
-            ),
-            yaxis=dict(title='心率 (bpm)'),
-            height=450,
-            **self._common_layout_style,
-        )
-
-        return self._to_js_dict(fig.to_dict())
-
-    def create_speed_hr_temp_curves(self, df: pd.DataFrame) -> Dict:
-        """
-        配速-心率温度分层曲线
-        - 按温度分组，每组一条趋势线
-        - 横轴：配速 (min/km)，倒序（左慢右快）
-        - 纵轴：心率 (bpm)
-        """
-        if df.empty:
-            return {}
-
-        df = df.copy()
-
-        # 计算配速
-        df = df[df['avg_pace_sec'] > 0].copy()
-        if df.empty:
-            return {}
-        df['pace_min_km'] = df['avg_pace_sec'] / 60.0
-
-        # 计算气温
-        if 'min_temperature' in df.columns and 'max_temperature' in df.columns:
-            temp_mask = df['min_temperature'].notna() & df['max_temperature'].notna()
-            df = df[temp_mask].copy()
-            df['avg_temperature'] = (df['min_temperature'] + df['max_temperature']) / 2.0
-        else:
-            return {}
-
-        # 过滤异常值（使用 1%~99% 分位，样本过少时不过滤）
-        df = self._filter_pace_quantile(df)
-        df = df[df['avg_hr'] >= 60].copy()
-
-        if df.empty:
-            return {}
-
-        # 温度分组
-        bins = [
-            (-float('inf'), 15, '<15°C 冷'),
-            (15, 20, '15-20°C 凉爽'),
-            (20, 25, '20-25°C 适中'),
-            (25, 30, '25-30°C 热'),
-            (30, float('inf'), '30°C+ 酷热'),
-        ]
-        temp_group_colors = {
-            '<15°C 冷': '#1E90FF',
-            '15-20°C 凉爽': '#4169E1',
-            '20-25°C 适中': '#32CD32',
-            '25-30°C 热': '#FF8C00',
-            '30°C+ 酷热': '#FF4500',
+        cat_label_map = {
+            'easy_run': '轻松跑',
+            'aerobic_run': '有氧耐力跑',
+            'lsd': 'LSD长距离',
         }
 
-        df['temp_group'] = pd.cut(df['avg_temperature'], bins=[b[0] for b in bins] + [bins[-1][1]], labels=[b[2] for b in bins], include_lowest=True)
-
-        # 统计各组样本数
-        group_counts = df.groupby('temp_group', observed=True).size()
-
-        # 只有样本数 >= 3 的组才绘制
-        valid_groups = group_counts[group_counts >= 3].index.tolist()
-
-        if len(valid_groups) == 0:
-            return {}
-
-        total_points = df[df['temp_group'].isin(valid_groups)].shape[0]
-        if total_points < 10:
-            return {}
-
         fig = go.Figure()
 
-        for group_label in valid_groups:
-            group_df = df[df['temp_group'] == group_label]
-            if group_df.empty:
+        for cat in aerobic_cats:
+            cat_data = temp_df[temp_df['category'] == cat]
+            if cat_data.empty:
                 continue
-
-            color = temp_group_colors.get(group_label, '#999999')
-            n = len(group_df)
-            legend_name = f"{group_label} (n={n})"
-
-            # 按配速排序
-            group_sorted = group_df.sort_values('pace_min_km')
-
-            # 添加散点
+            color = self.CATEGORY_COLORS.get(cat, '#667eea')
             fig.add_trace(go.Scatter(
-                x=group_sorted['pace_min_km'].tolist(),
-                y=group_sorted['avg_hr'].tolist(),
+                x=cat_data['mid_temp'].tolist(),
+                y=cat_data['hr_pace_ratio'].tolist(),
                 mode='markers',
-                name=legend_name,
-                marker=dict(color=color, size=6, symbol='circle', opacity=0.6),
+                name=cat_label_map[cat],
+                marker=dict(
+                    size=9,
+                    color=color,
+                    opacity=cat_data['point_opacity'].tolist(),
+                    line=dict(color=color, width=1),
+                ),
+                customdata=list(zip(
+                    cat_data['title'].tolist(),
+                    cat_data['date_str'].tolist(),
+                    cat_data['avg_pace_sec'].tolist(),
+                    cat_data['avg_hr'].tolist(),
+                    cat_data['distance'].tolist(),
+                )),
                 hovertemplate=(
-                    f"<b>{group_label}</b><br>"
-                    f"样本数: {n}<br>"
-                    f"配速: %{{x:.1f}} min/km<br>"
-                    f"心率: %{{y:.0f}} bpm<extra></extra>"
+                    "<b>%{customdata[0]}</b><br>日期: %{customdata[1]}<br>"
+                    "气温: %{x:.1f}°C<br>效率指数: %{y:.0f} (m/h)/bpm<br>"
+                    "配速: %{customdata[2]:.0f} 秒/km<br>心率: %{customdata[3]:.0f} bpm<br>"
+                    "距离: %{customdata[4]:.2f} km<extra></extra>"
                 ),
             ))
 
-            # 线性回归趋势线
-            x_vals = group_sorted['pace_min_km'].values
-            y_vals = group_sorted['avg_hr'].values
-            if len(x_vals) >= 2:
-                coeffs = np.polyfit(x_vals, y_vals, 1)
-                x_range = np.linspace(x_vals.min(), x_vals.max(), 50)
-                y_fit = coeffs[0] * x_range + coeffs[1]
-                fig.add_trace(go.Scatter(
-                    x=x_range.tolist(),
-                    y=y_fit.tolist(),
-                    mode='lines',
-                    name=f'{legend_name} 趋势',
-                    line=dict(color=color, width=2.5, dash='solid'),
-                    showlegend=False,
-                    hoverinfo='skip',
-                ))
+        # 线性趋势线（跨全部点）
+        x_vals = temp_df['mid_temp'].values
+        y_vals = temp_df['hr_pace_ratio'].values
+        slope, intercept = np.polyfit(x_vals, y_vals, 1)
+        x_range = np.linspace(x_vals.min(), x_vals.max(), 50)
+        fig.add_trace(go.Scatter(
+            x=x_range.tolist(),
+            y=(slope * x_range + intercept).tolist(),
+            mode='lines',
+            name='趋势线',
+            line=dict(color='#333333', width=2, dash='dash'),
+            hoverinfo='skip',
+        ))
 
-        # 动态配速范围（±5秒 = ±0.083分）
-        pace_min = df['pace_min_km'].min()
-        pace_max = df['pace_min_km'].max()
-        pad = 5.0 / 60.0  # 5秒
-        pace_lo = pace_max + pad  # 最慢+5秒
-        pace_hi = pace_min - pad  # 最快-5秒
+        # 每 °C 代价标注：效率指数斜率 → 同心率配速折算
+        # 配速 = 3600000/(效率×心率)，在 median 效率/心率处取导数：dPace = -slope/效率中值 × 配速中值
+        eff_med = float(np.median(y_vals))
+        hr_med = float(np.median(temp_df['avg_hr'].values))
+        pace_med = 3600000.0 / (eff_med * hr_med)
+        pace_cost_sec = -slope / eff_med * pace_med  # 每升高 1°C 同心率配速变慢秒数
+        cost_text = (
+            f"每升高 1°C，效率指数约降 {abs(slope):.1f}"
+            f"（约等于同心率配速慢 {pace_cost_sec:.0f} 秒/km）"
+        )
+        fig.add_annotation(
+            x=float(x_range[len(x_range) // 2]),
+            y=float(slope * x_range[len(x_range) // 2] + intercept),
+            text=cost_text,
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor='#333333',
+            ax=0,
+            ay=-45,
+            font=dict(color='#333333', size=12),
+            bgcolor='rgba(255,255,255,0.85)',
+        )
 
         fig.update_layout(
             title=None,
-            xaxis=dict(
-                title='配速 (min/km)',
-                range=[pace_lo, pace_hi],  # 左慢右快
-            ),
-            yaxis=dict(title='心率 (bpm)'),
+            xaxis=dict(title='气温中值 (°C)'),
+            yaxis=dict(title='效率指数 (m/h)/bpm'),
             height=450,
             **self._common_layout_style,
         )
@@ -1507,18 +1265,6 @@ class ChartGenerator:
             charts['training_effect'] = {}
 
         try:
-            charts['power_distribution'] = self.create_power_distribution_chart(df)
-        except Exception as e:
-            logger.warning(f"图表生成失败: power_distribution")
-            charts['power_distribution'] = {}
-
-        try:
-            charts['hr_distribution'] = self.create_hr_distribution_histogram(df)
-        except Exception as e:
-            logger.warning(f"图表生成失败: hr_distribution")
-            charts['hr_distribution'] = {}
-
-        try:
             charts['temp_hr_scatter'] = self.create_temp_hr_scatter_chart(df)
         except Exception as e:
             logger.warning(f"图表生成失败: temp_hr_scatter")
@@ -1532,16 +1278,10 @@ class ChartGenerator:
             charts['beats_per_km'] = {}
 
         try:
-            charts['speed_hr_scatter'] = self.create_speed_hr_scatter_chart(df)
+            charts['temp_efficiency_cost'] = self.create_temp_efficiency_cost_chart(df)
         except Exception as e:
-            logger.warning(f"图表生成失败: speed_hr_scatter")
-            charts['speed_hr_scatter'] = {}
-
-        try:
-            charts['speed_hr_temp_curves'] = self.create_speed_hr_temp_curves(df)
-        except Exception as e:
-            logger.warning(f"图表生成失败: speed_hr_temp_curves")
-            charts['speed_hr_temp_curves'] = {}
+            logger.warning(f"图表生成失败: temp_efficiency_cost")
+            charts['temp_efficiency_cost'] = {}
 
         return charts
     
@@ -1556,6 +1296,20 @@ class ChartGenerator:
         lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
         filtered = [v for v in values if lo <= v <= hi]
         return filtered if filtered else values
+
+    @staticmethod
+    def _smooth_centered_3(values: list) -> list:
+        """窗口=3 居中滚动均值；端点窗口截断（取可用邻域），None 位置跳过不填 0。
+        用于 P20/P80 阴影带边缘平滑，缓解逐公里锯齿跳动。"""
+        n = len(values)
+        out = [None] * n
+        for i in range(n):
+            if values[i] is None:
+                continue
+            window = [values[j] for j in (i - 1, i, i + 1)
+                      if 0 <= j < n and values[j] is not None]
+            out[i] = sum(window) / len(window)
+        return out
 
     def _filter_pace_quantile(self, df: pd.DataFrame, min_samples: int = 10) -> pd.DataFrame:
         """按 1%~99% 分位过滤配速异常值；样本 < min_samples 时保守不过滤。"""
@@ -1605,48 +1359,54 @@ class ChartGenerator:
             x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
             pace_values = [lap.get('pace_sec_per_km', 0) for lap in current]
             pace_fmt = [self._format_pace(p) for p in pace_values]
-            
-            fig = go.Figure()
-            
-            # 本次配速曲线
-            fig.add_trace(go.Scatter(
-                x=x_km,
-                y=pace_values,
-                mode='lines+markers',
-                name='本次配速',
-                line=dict(color='#4169E1', width=3, shape='spline'),
-                marker=dict(size=8, color='#4169E1'),
-                hovertemplate='公里 %{x}<br>配速: %{customdata}/KM<extra></extra>',
-                customdata=pace_fmt,
-            ))
-            
+
             # 需求 3：历史数据处理——同一 KM 序号，只使用有数据的记录计算
+            # 残圈过滤：仅纳入完整公里圈（distance_m >= 950），避免残圈以 lap_index
+            # 身份混入其他跑步的同公里基线；缺距离字段的圈保守保留
             # IQR 异常值过滤 + numpy 真分位数插值；
-            # 新阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
-            #         当前公里样本 >=20 才绘制该公里阴影，
-            #         当前公里样本 >=5 才绘制中位线，
-            #         当前公里样本 >=10 才启用 IQR 过滤。
+            # 阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
+            #       当前公里样本 >=25 才绘制该公里阴影（缓解末段漏斗爆炸），
+            #       当前公里样本 >=5 才绘制中位线，
+            #       当前公里样本 >=10 才启用 IQR 过滤。
             hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
             category_enough = len(recent_laps) >= 30
             if recent_laps:
+                residual_drop = 0
+                filtered_recent = []
+                for run_laps in recent_laps:
+                    kept = []
+                    for rl in run_laps:
+                        dist = rl.get('distance_m')
+                        if dist is not None and dist < 950:
+                            residual_drop += 1
+                        else:
+                            kept.append(rl)
+                    filtered_recent.append(kept)
+                if residual_drop:
+                    logger.info(f"分圈配速图历史基线：剔除残圈 {residual_drop} 圈（distance_m<950）")
+
+                raw_counts, filtered_counts = {}, {}
                 for lap_idx in range(1, total_km + 1):
                     paces = []
-                    for run_laps in recent_laps:
+                    raw_count = 0
+                    for run_laps in filtered_recent:
                         for rl in run_laps:
                             if rl.get('lap_index') == lap_idx:
+                                raw_count += 1
                                 p = rl.get('pace_sec_per_km', 0)
                                 if p > 0:
                                     paces.append(p)
 
                     if paces:
-                        raw_count = len(paces)
                         if raw_count >= 10:
                             paces = self._iqr_filter(paces)
+                        raw_counts[lap_idx] = raw_count
+                        filtered_counts[lap_idx] = len(paces)
                         if len(paces) >= 5:
                             hist_median_pace.append(float(np.percentile(paces, 50)))
                         else:
                             hist_median_pace.append(None)
-                        if category_enough and len(paces) >= 20:
+                        if category_enough and len(paces) >= 25:
                             hist_p20_pace.append(float(np.percentile(paces, 20)))
                             hist_p80_pace.append(float(np.percentile(paces, 80)))
                         else:
@@ -1656,22 +1416,26 @@ class ChartGenerator:
                         hist_median_pace.append(None)
                         hist_p20_pace.append(None)
                         hist_p80_pace.append(None)
-                
+
+                # 残圈过滤后样本构成变化日志（仅打印有变化的公里）
+                changed = {k: (raw_counts[k], filtered_counts[k])
+                           for k in filtered_counts
+                           if filtered_counts[k] != raw_counts.get(k)}
+                if changed:
+                    logger.info(f"分圈配速图基线样本变化（公里: 过滤前→过滤后）: "
+                                + ", ".join(f"km{k}: {v[0]}→{v[1]}" for k, v in changed.items()))
+
+                # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
+                hist_p20_pace = self._smooth_centered_3(hist_p20_pace)
+                hist_p80_pace = self._smooth_centered_3(hist_p80_pace)
+
                 hist_x = list(range(1, total_km + 1))
-                
-                # 历史中位配速（灰色虚线）
-                fig.add_trace(go.Scatter(
-                    x=hist_x,
-                    y=hist_median_pace,
-                    mode='lines',
-                    name='历史中位配速',
-                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
-                    hovertemplate='公里 %{x}<br>历史中位配速: %{customdata}/KM<extra></extra>',
-                    customdata=[self._format_pace(v) if v is not None else '--' for v in hist_median_pace],
-                ))
-                
+
+                fig = go.Figure()
+
                 # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
-                # 仅当分类历史样本充足且当前公里样本 >=20 时绘制；剔除无数据公里，避免阴影掉到 0
+                # 仅当分类历史样本充足且当前公里样本 >=25 时绘制；剔除无数据公里，避免阴影掉到 0
+                # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
                 if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
                             if a is not None and b is not None]
@@ -1687,7 +1451,32 @@ class ChartGenerator:
                             hoverinfo='skip',
                             showlegend=True,
                         ))
-            
+
+                # 历史中位配速（灰色虚线）
+                fig.add_trace(go.Scatter(
+                    x=hist_x,
+                    y=hist_median_pace,
+                    mode='lines',
+                    name='历史中位配速',
+                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                    hovertemplate='公里 %{x}<br>历史中位配速: %{customdata}/KM<extra></extra>',
+                    customdata=[self._format_pace(v) if v is not None else '--' for v in hist_median_pace],
+                ))
+            else:
+                fig = go.Figure()
+
+            # 本次配速曲线（最后 add，确保压在阴影带上方）
+            fig.add_trace(go.Scatter(
+                x=x_km,
+                y=pace_values,
+                mode='lines+markers',
+                name='本次配速',
+                line=dict(color='#4169E1', width=3, shape='spline'),
+                marker=dict(size=8, color='#4169E1'),
+                hovertemplate='公里 %{x}<br>配速: %{customdata}/KM<extra></extra>',
+                customdata=pace_fmt,
+            ))
+
             # 需求 1：Y 轴使用自定义 ticktext 显示 X:XX/KM 格式
             # 范围取本次与历史区间的并集，避免阴影溢出可视区被裁、刻度缺失
             valid_paces = [p for p in pace_values if p > 0]
@@ -1764,32 +1553,30 @@ class ChartGenerator:
             
             x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
             hr_values = [lap.get('avg_hr') for lap in current]
-            
-            fig = go.Figure()
-            
-            # 本次心率曲线
-            fig.add_trace(go.Scatter(
-                x=x_km,
-                y=hr_values,
-                mode='lines+markers',
-                name='本次心率',
-                line=dict(color='#FF6B6B', width=3, shape='spline'),
-                marker=dict(size=8, color='#FF6B6B'),
-                hovertemplate='公里 %{x}<br>心率: %{y:.0f} bpm<extra></extra>',
-            ))
-            
+
             # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
-            # IQR 异常值过滤 + numpy 真分位数插值；
-            # 新阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
-            #         当前公里样本 >=20 才绘制该公里阴影，
-            #         当前公里样本 >=5 才绘制中位线，
-            #         当前公里样本 >=10 才启用 IQR 过滤。
+            # 残圈过滤：仅纳入完整公里圈（distance_m >= 950），与配速图同口径；
+            # 阈值与配速图一致：阴影带样本 >=25（缓解末段漏斗爆炸）
             hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
             category_enough = len(recent_laps) >= 30
             if recent_laps:
+                residual_drop = 0
+                filtered_recent = []
+                for run_laps in recent_laps:
+                    kept = []
+                    for rl in run_laps:
+                        dist = rl.get('distance_m')
+                        if dist is not None and dist < 950:
+                            residual_drop += 1
+                        else:
+                            kept.append(rl)
+                    filtered_recent.append(kept)
+                if residual_drop:
+                    logger.info(f"分圈心率图历史基线：剔除残圈 {residual_drop} 圈（distance_m<950）")
+
                 for lap_idx in range(1, total_km + 1):
                     hrs = []
-                    for run_laps in recent_laps:
+                    for run_laps in filtered_recent:
                         for rl in run_laps:
                             if rl.get('lap_index') == lap_idx:
                                 h = rl.get('avg_hr')
@@ -1804,7 +1591,7 @@ class ChartGenerator:
                             hist_median_hr.append(float(np.percentile(hrs, 50)))
                         else:
                             hist_median_hr.append(None)
-                        if category_enough and len(hrs) >= 20:
+                        if category_enough and len(hrs) >= 25:
                             hist_p20_hr.append(float(np.percentile(hrs, 20)))
                             hist_p80_hr.append(float(np.percentile(hrs, 80)))
                         else:
@@ -1814,21 +1601,18 @@ class ChartGenerator:
                         hist_median_hr.append(None)
                         hist_p20_hr.append(None)
                         hist_p80_hr.append(None)
-                
+
+                # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
+                hist_p20_hr = self._smooth_centered_3(hist_p20_hr)
+                hist_p80_hr = self._smooth_centered_3(hist_p80_hr)
+
                 hist_x = list(range(1, total_km + 1))
-                
-                # 历史中位心率（灰色虚线）
-                fig.add_trace(go.Scatter(
-                    x=hist_x,
-                    y=hist_median_hr,
-                    mode='lines',
-                    name='历史中位心率',
-                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
-                    hovertemplate='公里 %{x}<br>历史中位心率: %{y:.0f} bpm<extra></extra>',
-                ))
-                
+
+                fig = go.Figure()
+
                 # 填充区域：历史P20 vs P80心率区间
-                # 仅当分类历史样本充足且当前公里样本 >=20 时绘制；剔除无数据公里，避免阴影掉到 0
+                # 仅当分类历史样本充足且当前公里样本 >=25 时绘制；剔除无数据公里，避免阴影掉到 0
+                # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
                 if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
                             if a is not None and b is not None]
@@ -1844,7 +1628,30 @@ class ChartGenerator:
                             hoverinfo='skip',
                             showlegend=True,
                         ))
-            
+
+                # 历史中位心率（灰色虚线）
+                fig.add_trace(go.Scatter(
+                    x=hist_x,
+                    y=hist_median_hr,
+                    mode='lines',
+                    name='历史中位心率',
+                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                    hovertemplate='公里 %{x}<br>历史中位心率: %{y:.0f} bpm<extra></extra>',
+                ))
+            else:
+                fig = go.Figure()
+
+            # 本次心率曲线（最后 add，确保压在阴影带上方）
+            fig.add_trace(go.Scatter(
+                x=x_km,
+                y=hr_values,
+                mode='lines+markers',
+                name='本次心率',
+                line=dict(color='#FF6B6B', width=3, shape='spline'),
+                marker=dict(size=8, color='#FF6B6B'),
+                hovertemplate='公里 %{x}<br>心率: %{y:.0f} bpm<extra></extra>',
+            ))
+
             # Y 轴范围：只按图上实际绘制的内容计算（本次曲线 + 历史中位线 + P20-P80 带），±5% 边距
             all_hr_values = [h for h in hr_values if h is not None and h > 0]
             for hist_vals in (hist_median_hr, hist_p20_hr, hist_p80_hr):
