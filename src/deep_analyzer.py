@@ -430,7 +430,7 @@ class DeepRunAnalyzer:
         # 新增：状态评估与趋势分析
         result['short_term'] = self._calc_short_term(row, category_norm, target_bucket, df)
         result['long_term'] = self._calc_long_term(row, category_norm, target_bucket, df)
-        result['tech_changes'] = self._calc_tech_changes(row, df_same)
+        result['tech_changes'] = self._calc_tech_changes(row, df, category_norm)
         
         # 获取长期基线数据用于百分位和预期配速计算（PRD F5：同口径三级选择）
         df_long_term, _lt_scope = self._get_long_term_baseline(row, category_norm, target_bucket, df)
@@ -572,40 +572,71 @@ class DeepRunAnalyzer:
             'sample_size': len(recent_laps),
         }
 
-    def _calc_tech_changes(self, row: pd.Series, df_same: pd.DataFrame) -> list:
-        """对比本次 vs 历史中位数，仅列出超阈值变化的技术指标
+    def _calc_tech_changes(self, row: pd.Series, df_all: pd.DataFrame, category_norm: str) -> list:
+        """对比本次 vs 长期基线（3 个月前同类型相近强度跑步），仅列出有进步的指标
 
-        阈值：vertical_ratio ±0.2、ground_contact_time ±5ms、cadence ±2spm、stride_length ±1cm
-        方向：VR/GCT 越低越好；cadence/stride 只做变化量不做方向判定
+        基线选择（PRD：拉开时间跨度、收窄比较口径）：
+        1. 同类型 + date < 目标日-90天 + avg_hr 与本次差值 ≤5bpm（相近强度）
+        2. 样本 <3 → 放宽强度约束（同类型 + ≥90天前）
+        3. 仍 <3 → 无基线，返回空列表
+
+        进步判定阈值：vertical_ratio ≤-0.2、ground_contact_time ≤-5ms、
+                      cadence ≥+2spm、stride_length ≥+1cm（退步/持平不进列表）
 
         Returns:
-            变化项列表，每项含 metric/current/baseline/diff/unit/direction
+            进步项列表，每项含 metric/current/baseline/diff/unit/direction('improved')
         """
+        # 同类型候选，排除本次
+        if category_norm and '_category_norm' in df_all.columns:
+            d = df_all[df_all['_category_norm'] == category_norm]
+        else:
+            d = df_all
+        activity_id = row.get('activity_id')
+        if activity_id:
+            d = d[d['activity_id'] != activity_id]
+
+        target_ts = pd.Timestamp(self.target_date) if self.target_date is not None else None
+        if target_ts is not None:
+            d = d[d['date'] < target_ts - pd.Timedelta(days=90)]
+
+        if len(d) < 3:
+            return []
+
+        # 第一级：相近强度（avg_hr ±5bpm）；本次无心率数据时跳过该级
+        d_strong = d
+        curr_hr = row.get('avg_hr')
+        if curr_hr is not None and not pd.isna(curr_hr) and 'avg_hr' in d.columns:
+            d_hr = d[d['avg_hr'].notna() & (abs(d['avg_hr'] - curr_hr) <= 5)]
+            if len(d_hr) >= 3:
+                d_strong = d_hr
+        baseline_df = d_strong
+
         def hist_median(col: str):
-            if col in df_same.columns and df_same[col].notna().any():
-                return df_same[col].dropna().median()
+            if col in baseline_df.columns and baseline_df[col].notna().any():
+                return baseline_df[col].dropna().median()
             return None
 
         specs = [
-            ('vertical_ratio', '垂直振幅比', 0.2, 'lower', '%'),
-            ('ground_contact_time', '触地时间', 5, 'lower', 'ms'),
-            ('cadence', '步频', 2, 'neutral', 'spm'),
-            ('stride_length', '步幅', 1, 'neutral', 'cm'),
+            ('vertical_ratio', '垂直振幅比', -0.2, '%'),
+            ('ground_contact_time', '触地时间', -5, 'ms'),
+            ('cadence', '步频', 2, 'spm'),
+            ('stride_length', '步幅', 1, 'cm'),
         ]
 
         changes = []
-        for col, label, threshold, direction, unit in specs:
+        for col, label, threshold, unit in specs:
             baseline = hist_median(col)
             curr = row.get(col)
             if baseline is None or curr is None or pd.isna(curr):
                 continue
             diff = curr - baseline
-            if abs(diff) < threshold:
-                continue
-            if direction == 'lower':
-                verdict = 'improved' if diff < 0 else 'regressed'
+            # 只报进步：阈值带符号，diff 需越过阈值才算进步
+            if threshold < 0:
+                if diff > threshold:
+                    continue
             else:
-                verdict = 'changed'
+                if diff < threshold:
+                    continue
             changes.append({
                 'metric': label,
                 'field': col,
@@ -613,7 +644,7 @@ class DeepRunAnalyzer:
                 'baseline': round(baseline, 2),
                 'diff': round(diff, 2),
                 'unit': unit,
-                'direction': verdict,
+                'direction': 'improved',
             })
         return changes
 
@@ -1321,23 +1352,16 @@ class LLMReportGenerator:
             f"- 触地时间：{raw.get('ground_contact_ms', 0):.1f} ms（{efficiency.get('ground_contact_eval', '')}）",
         ]
         if tech_changes:
-            tech_lines.append('与历史中位数相比的变化（仅列出超阈值项，方向：VR/触地时间越低越好）：')
+            tech_lines.append('以下技术指标与 3 个月前同类型相近强度跑步相比出现改善：')
             for c in tech_changes:
-                if c['direction'] == 'improved':
-                    word = '改善'
-                elif c['direction'] == 'regressed':
-                    word = '退步'
-                else:
-                    word = '升高' if c['diff'] > 0 else '降低'
                 diff_str = f"{c['diff']:+.2f}".rstrip('0').rstrip('.')
                 tech_lines.append(
-                    f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 历史中位 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，{word}）"
+                    f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 长期基线 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，改善）"
                 )
-            tech_instruction = ('技术效率分析：只对上述有变化的指标展开点评（未变化指标不必罗列），'
-                                '评价较差的指标须给改进目标值（如"触地时间压至 220-230ms"）和对应练习方法')
+            tech_instruction = ('技术效率分析：以下技术指标与 3 个月前同类型相近强度跑步相比出现改善'
+                                '（进步对业余跑者意味着长期积累见效），逐项简要点评其训练学意义')
         else:
-            tech_instruction = ('技术效率分析：本次各项技术指标与历史水平相比均无超阈值变化，'
-                                '本节用一句话确认稳定即可，不要逐项罗列指标数值')
+            tech_instruction = ('技术效率分析：技术指标长期稳定，本节用一句话确认即可，不要逐项罗列指标数值')
         tech_section = '\n'.join(tech_lines)
 
         prompt = f"""你是一位专业的跑步教练和运动科学家。请基于跑者自述（如有，见上方「跑者自述」段落），以及以下数据，生成一份专业的跑步分析报告。

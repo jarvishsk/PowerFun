@@ -17,6 +17,11 @@ from src.utils import format_pace_mmss
 
 logger = logging.getLogger(__name__)
 
+# P20-P80 阴影带每公里样本门槛（配速图/心率图共用）
+# 2026-10-11 报告复现：末公里残圈过滤后仅剩 21 样本（<25 被误伤不绘制），
+# 漏斗爆炸已由残圈过滤 + 边缘平滑解决，门槛回退至 20
+BAND_MIN_SAMPLES = 20
+
 
 class ChartGenerator:
     """图表生成器"""
@@ -1365,7 +1370,7 @@ class ChartGenerator:
             # 身份混入其他跑步的同公里基线；缺距离字段的圈保守保留
             # IQR 异常值过滤 + numpy 真分位数插值；
             # 阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
-            #       当前公里样本 >=25 才绘制该公里阴影（缓解末段漏斗爆炸），
+            #       当前公里样本 >=BAND_MIN_SAMPLES 才绘制该公里阴影（残圈过滤+边缘平滑已防漏斗爆炸），
             #       当前公里样本 >=5 才绘制中位线，
             #       当前公里样本 >=10 才启用 IQR 过滤。
             hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
@@ -1406,7 +1411,7 @@ class ChartGenerator:
                             hist_median_pace.append(float(np.percentile(paces, 50)))
                         else:
                             hist_median_pace.append(None)
-                        if category_enough and len(paces) >= 25:
+                        if category_enough and len(paces) >= BAND_MIN_SAMPLES:
                             hist_p20_pace.append(float(np.percentile(paces, 20)))
                             hist_p80_pace.append(float(np.percentile(paces, 80)))
                         else:
@@ -1434,7 +1439,7 @@ class ChartGenerator:
                 fig = go.Figure()
 
                 # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
-                # 仅当分类历史样本充足且当前公里样本 >=25 时绘制；剔除无数据公里，避免阴影掉到 0
+                # 仅当分类历史样本充足且当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
                 # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
                 if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
@@ -1556,7 +1561,7 @@ class ChartGenerator:
 
             # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
             # 残圈过滤：仅纳入完整公里圈（distance_m >= 950），与配速图同口径；
-            # 阈值与配速图一致：阴影带样本 >=25（缓解末段漏斗爆炸）
+            # 阈值与配速图一致：阴影带样本 >=BAND_MIN_SAMPLES（残圈过滤+边缘平滑已防漏斗爆炸）
             hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
             category_enough = len(recent_laps) >= 30
             if recent_laps:
@@ -1591,7 +1596,7 @@ class ChartGenerator:
                             hist_median_hr.append(float(np.percentile(hrs, 50)))
                         else:
                             hist_median_hr.append(None)
-                        if category_enough and len(hrs) >= 25:
+                        if category_enough and len(hrs) >= BAND_MIN_SAMPLES:
                             hist_p20_hr.append(float(np.percentile(hrs, 20)))
                             hist_p80_hr.append(float(np.percentile(hrs, 80)))
                         else:
@@ -1611,7 +1616,7 @@ class ChartGenerator:
                 fig = go.Figure()
 
                 # 填充区域：历史P20 vs P80心率区间
-                # 仅当分类历史样本充足且当前公里样本 >=25 时绘制；剔除无数据公里，避免阴影掉到 0
+                # 仅当分类历史样本充足且当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
                 # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
                 if category_enough:
                     band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
