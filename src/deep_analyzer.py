@@ -10,11 +10,33 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from src.config import DEFAULT_CONFIG, HR_ZONE_PERCENTAGES
+from src.config import DEFAULT_CONFIG, HR_ZONE_PERCENTAGES, USER_CONFIG
 from src.classifier import HeartRateClassifier
 from src.utils import format_pace_chinese
 
 logger = logging.getLogger("PowerFun.deep_analyzer")
+
+# ============ 技术指标基线参数（PRD F1：功率口径）============
+TECH_BASELINE_MIN_DAYS = 90      # 基线最小时间跨度：拉开 90 天排除近期体能红利
+TECH_BASELINE_MIN_SAMPLES = 3    # 基线最少样本数
+TECH_POWER_TOLERANCE_W = 8       # 相近功率容差 ±8W（主口径：机械输出与步频/步幅/VR/GCT 直接耦合）
+TECH_PACE_TOLERANCE_SEC = 15     # 相近配速容差 ±15 秒（功率缺失样本的兜底口径）
+
+# 进步判定阈值（只报进步，阈值不动）
+TECH_IMPROVE_VR = -0.2           # 垂直振幅比下降 ≥0.2% 算进步
+TECH_IMPROVE_GCT = -5            # 触地时间缩短 ≥5ms 算进步
+TECH_IMPROVE_CADENCE = 2         # 步频提升 ≥2spm 算进步
+TECH_IMPROVE_STRIDE = 1          # 步幅提升 ≥1cm 算进步
+
+# ============ 问题探测器阈值（PRD F2，模块级常量便于调整）============
+# 依据：easy 课高强度占比应极低；有氧课 Z4+ 超 1/5 即 threshold 课型失效；LSD 应以 Z2 为主
+ISSUE_INTENSITY_LIMITS = {'easy_run': (3, 8.0), 'aerobic_run': (4, 20.0), 'lsd': (2, 25.0)}
+ISSUE_PA_HR_PCT = 5.0            # 有氧解耦 >+5% 判定心率漂移
+ISSUE_LOAD_RATIO = 1.5           # 负荷 > 近 4 次均值 ×1.5 判定激增
+ISSUE_LOAD_RECENT_N = 4          # 负荷对比取近 4 次（不限类型，排除本次）
+ISSUE_LOAD_MIN_SAMPLES = 2       # 近 4 次有效负荷 <2 则跳过
+ISSUE_MAX_HR_WINDOW_DAYS = 90    # 心率异常 P95 口径：近 90 天同类型
+ISSUE_MAX_HR_P95_MIN_SAMPLES = 5 # P95 口径最少样本数
 
 
 class DeepRunAnalyzer:
@@ -68,7 +90,10 @@ class DeepRunAnalyzer:
         
         # Pa:Hr 有氧解耦分析（使用原始 lap 数据，不是转换后的）
         result['pa_hr'] = self._calc_pa_hr(self.raw_laps) if self.raw_laps else None
-        
+
+        # 确定性问题探测器（PRD F2）
+        result['issues'] = self._detect_issues(row, result)
+
         return result
     
     def _get_hr_zone_ranges(self, row: pd.Series) -> dict:
@@ -573,15 +598,18 @@ class DeepRunAnalyzer:
         }
 
     def _calc_tech_changes(self, row: pd.Series, df_all: pd.DataFrame, category_norm: str) -> list:
-        """对比本次 vs 长期基线（3 个月前同类型相近强度跑步），仅列出有进步的指标
+        """对比本次 vs 长期基线（3 个月前同类型相近功率跑步），仅列出有进步的指标
 
-        基线选择（PRD：拉开时间跨度、收窄比较口径）：
-        1. 同类型 + date < 目标日-90天 + avg_hr 与本次差值 ≤5bpm（相近强度）
-        2. 样本 <3 → 放宽强度约束（同类型 + ≥90天前）
-        3. 仍 <3 → 无基线，返回空列表
+        基线选择链（PRD F1：心率口径 → 功率口径，避免体能/季节漂移误报技术进步）：
+        1. 同类型 + date < 目标日-90天 + avg_power 与本次差值 ≤8W（≥3 样本，主口径）
+        2. 样本 <3 → 同类型 + ≥90天前 + avg_pace_sec 与本次差值 ≤15 秒（≥3 样本，功率缺失兜底）
+        3. 仍 <3 → 同类型 + ≥90天前（≥3 样本）
+        4. 仍 <3 → 无基线，返回空列表
 
         进步判定阈值：vertical_ratio ≤-0.2、ground_contact_time ≤-5ms、
                       cadence ≥+2spm、stride_length ≥+1cm（退步/持平不进列表）
+
+        选中的基线存入 self._tech_baseline_info（供验收打印与问题探测器 P80 使用）
 
         Returns:
             进步项列表，每项含 metric/current/baseline/diff/unit/direction('improved')
@@ -597,19 +625,40 @@ class DeepRunAnalyzer:
 
         target_ts = pd.Timestamp(self.target_date) if self.target_date is not None else None
         if target_ts is not None:
-            d = d[d['date'] < target_ts - pd.Timedelta(days=90)]
+            d = d[d['date'] < target_ts - pd.Timedelta(days=TECH_BASELINE_MIN_DAYS)]
 
-        if len(d) < 3:
+        self._tech_baseline_info = None
+        if len(d) < TECH_BASELINE_MIN_SAMPLES:
             return []
 
-        # 第一级：相近强度（avg_hr ±5bpm）；本次无心率数据时跳过该级
-        d_strong = d
-        curr_hr = row.get('avg_hr')
-        if curr_hr is not None and not pd.isna(curr_hr) and 'avg_hr' in d.columns:
-            d_hr = d[d['avg_hr'].notna() & (abs(d['avg_hr'] - curr_hr) <= 5)]
-            if len(d_hr) >= 3:
-                d_strong = d_hr
-        baseline_df = d_strong
+        # 第一级：相近功率（±8W，主口径）；本次功率缺失时跳过该级
+        baseline_df = None
+        curr_power = row.get('avg_power')
+        if curr_power is not None and not pd.isna(curr_power) and 'avg_power' in d.columns:
+            dp = d[d['avg_power'].notna() & (abs(d['avg_power'] - curr_power) <= TECH_POWER_TOLERANCE_W)]
+            if len(dp) >= TECH_BASELINE_MIN_SAMPLES:
+                baseline_df = dp
+
+        # 第二级：相近配速（±15 秒，功率缺失样本的兜底口径）
+        if baseline_df is None:
+            curr_pace = row.get('avg_pace_sec')
+            if curr_pace is not None and not pd.isna(curr_pace) and 'avg_pace_sec' in d.columns:
+                dpc = d[d['avg_pace_sec'].notna() & (abs(d['avg_pace_sec'] - curr_pace) <= TECH_PACE_TOLERANCE_SEC)]
+                if len(dpc) >= TECH_BASELINE_MIN_SAMPLES:
+                    baseline_df = dpc
+
+        # 第三级：同类型 ≥90 天前全量（放宽链）
+        if baseline_df is None:
+            if len(d) < TECH_BASELINE_MIN_SAMPLES:
+                return []
+            baseline_df = d
+
+        self._tech_baseline_info = {
+            'df': baseline_df,
+            'sample_size': len(baseline_df),
+            'dates': [str(x)[:10] for x in baseline_df['date']] if 'date' in baseline_df.columns else [],
+            'powers': [round(float(x)) for x in baseline_df['avg_power'].dropna()] if 'avg_power' in baseline_df.columns else [],
+        }
 
         def hist_median(col: str):
             if col in baseline_df.columns and baseline_df[col].notna().any():
@@ -617,10 +666,10 @@ class DeepRunAnalyzer:
             return None
 
         specs = [
-            ('vertical_ratio', '垂直振幅比', -0.2, '%'),
-            ('ground_contact_time', '触地时间', -5, 'ms'),
-            ('cadence', '步频', 2, 'spm'),
-            ('stride_length', '步幅', 1, 'cm'),
+            ('vertical_ratio', '垂直振幅比', TECH_IMPROVE_VR, '%'),
+            ('ground_contact_time', '触地时间', TECH_IMPROVE_GCT, 'ms'),
+            ('cadence', '步频', TECH_IMPROVE_CADENCE, 'spm'),
+            ('stride_length', '步幅', TECH_IMPROVE_STRIDE, 'cm'),
         ]
 
         changes = []
@@ -647,6 +696,120 @@ class DeepRunAnalyzer:
                 'direction': 'improved',
             })
         return changes
+
+    def _detect_issues(self, row: pd.Series, analysis_data: dict) -> list:
+        """确定性问题探测器（PRD F2）：返回问题清单，每项含 title + evidence；全部不满足返回空列表
+
+        探测器（阈值均为模块级常量，依据见常量注释）：
+        1. 强度偏离课型：easy_run Z3+ 占比 >8%；aerobic_run Z4+ >20%；lsd Z2+ >25%（其他类型不检测）
+        2. 心率漂移：Pa:Hr 有氧解耦 > +5%（字段缺失则跳过）
+        3. 负荷激增：training_load > 近4次（不限类型，排除本次）均值 × 1.5（有效样本 <2 则跳过）
+        4. 心率异常：max_hr > USER_CONFIG['max_hr'] 或 > 近90天同类型 max_hr 的 P95（样本≥5 才启用后者）
+        5. 技术指标异常：VR 或 GCT 劣于 F1 长跨度基线的 P80（基线存在才启用；仅作问题信号）
+        """
+        issues = []
+
+        def _num(val):
+            """取数值，None/NaN 返回 None"""
+            if val is None or pd.isna(val):
+                return None
+            return float(val)
+
+        category = row.get('category', '')
+
+        # 1. 强度偏离课型（占比 = 区间秒数 / 心率总时长）
+        if category in ISSUE_INTENSITY_LIMITS:
+            zone_start, limit_pct = ISSUE_INTENSITY_LIMITS[category]
+            zones = [_num(row.get(f'hr_zone_{i}_sec', 0)) or 0 for i in range(1, 6)]
+            total_sec = sum(zones)
+            if total_sec > 0:
+                high_sec = sum(zones[zone_start - 1:])
+                high_pct = high_sec / total_sec * 100
+                if high_pct > limit_pct:
+                    zone_label = f'Z{zone_start}+'
+                    issues.append({
+                        'title': f'强度偏离课型：{zone_label} 时间占比 {high_pct:.1f}%（阈值 {limit_pct:.0f}%）',
+                        'evidence': f'{zone_label} 区间 {high_sec:.0f} 秒 / 总时长 {total_sec:.0f} 秒 = {high_pct:.1f}%，超过 {category} 课型 {limit_pct:.0f}% 上限',
+                    })
+
+        # 2. 心率漂移（Pa:Hr 有氧解耦）
+        pa_hr = analysis_data.get('pa_hr')
+        if pa_hr:
+            pa_pct = _num(pa_hr.get('pa_hr_pct'))
+            if pa_pct is not None and pa_pct > ISSUE_PA_HR_PCT:
+                issues.append({
+                    'title': f'心率漂移：Pa:Hr 有氧解耦 +{pa_pct:.1f}%（阈值 +{ISSUE_PA_HR_PCT:.0f}%）',
+                    'evidence': f'后半程相比前半程，同功率输出下心率漂移 +{pa_pct:.1f}%，判定「{pa_hr.get("verdict", "未知")}」',
+                })
+
+        # 3. 负荷激增（近 N 次不限类型，排除本次）
+        if 'training_load' in self.df_all.columns:
+            df_hist = self.df_all
+            activity_id = row.get('activity_id')
+            if activity_id:
+                df_hist = df_hist[df_hist['activity_id'] != activity_id]
+            if self.target_date is not None:
+                df_hist = df_hist[df_hist['date'] <= pd.Timestamp(self.target_date)]
+            recent = df_hist.sort_values('date', ascending=False).head(ISSUE_LOAD_RECENT_N)
+            loads = recent['training_load'].dropna()
+            curr_load = _num(row.get('training_load'))
+            if len(loads) >= ISSUE_LOAD_MIN_SAMPLES and curr_load is not None:
+                mean_load = float(loads.mean())
+                if mean_load > 0 and curr_load > mean_load * ISSUE_LOAD_RATIO:
+                    issues.append({
+                        'title': f'负荷激增：训练负荷 {curr_load:.0f} 为近{ISSUE_LOAD_RECENT_N}次均值 {mean_load:.0f} 的 {curr_load / mean_load:.1f} 倍（阈值 {ISSUE_LOAD_RATIO:.1f}）',
+                        'evidence': f'近{ISSUE_LOAD_RECENT_N}次负荷：{"、".join(f"{x:.0f}" for x in loads)}，均值 {mean_load:.0f}，本次 {curr_load:.0f}',
+                    })
+
+        # 4. 心率异常（配置上限 或 近90天同类型 P95）
+        max_hr = _num(row.get('max_hr'))
+        if max_hr is not None:
+            hr_parts = []
+            config_max = USER_CONFIG.get('max_hr')
+            if config_max and max_hr > config_max:
+                hr_parts.append(f'超过配置最大心率 {config_max:.0f} bpm')
+            # 近90天同类型 max_hr P95（样本≥5 才启用）
+            if self.target_date is not None and '_category_norm' in self.df_all.columns:
+                category_norm = 'race' if category in ('full_marathon', 'half_marathon', 'race_event') else category
+                target_ts = pd.Timestamp(self.target_date)
+                d = self.df_all[self.df_all['_category_norm'] == category_norm]
+                if activity_id:
+                    d = d[d['activity_id'] != activity_id]
+                d = d[(d['date'] >= target_ts - pd.Timedelta(days=ISSUE_MAX_HR_WINDOW_DAYS))
+                      & (d['date'] <= target_ts)]
+                d = d[d['max_hr'].notna()]
+                if len(d) >= ISSUE_MAX_HR_P95_MIN_SAMPLES:
+                    p95 = float(d['max_hr'].quantile(0.95))
+                    if max_hr > p95:
+                        hr_parts.append(f'超过近{ISSUE_MAX_HR_WINDOW_DAYS}天同类型 max_hr P95（{p95:.0f} bpm，样本 {len(d)}）')
+            if hr_parts:
+                issues.append({
+                    'title': f'心率异常：最大心率 {max_hr:.0f} bpm 偏高（{"；".join(hr_parts)}）',
+                    'evidence': f'本次最大心率 {max_hr:.0f} bpm，{"；".join(hr_parts)}',
+                })
+
+        # 5. 技术指标异常（劣于 F1 长跨度基线 P80；基线存在才启用）
+        baseline_info = getattr(self, '_tech_baseline_info', None)
+        if baseline_info and baseline_info.get('df') is not None:
+            baseline_df = baseline_info['df']
+            tech_specs = [('vertical_ratio', '垂直振幅比', '%'), ('ground_contact_time', '触地时间', 'ms')]
+            for col, label, unit in tech_specs:
+                curr = _num(row.get(col))
+                if curr is None or curr <= 0:
+                    continue
+                if col not in baseline_df.columns:
+                    continue
+                s = baseline_df[col].dropna()
+                if len(s) < TECH_BASELINE_MIN_SAMPLES:
+                    continue
+                p80 = float(s.quantile(0.80))
+                if curr > p80:
+                    issues.append({
+                        'title': f'技术指标异常：{label} {curr:.1f}{unit} 劣于长期基线 P80（{p80:.1f}{unit}）',
+                        'evidence': f'本次 {label} {curr:.1f}{unit}，长期基线（≥{TECH_BASELINE_MIN_DAYS}天前同类型，样本 {baseline_info["sample_size"]}）P80 = {p80:.1f}{unit}',
+                    })
+
+        return issues
 
     @staticmethod
     def _get_temp_bucket(row_data):
@@ -1352,17 +1515,27 @@ class LLMReportGenerator:
             f"- 触地时间：{raw.get('ground_contact_ms', 0):.1f} ms（{efficiency.get('ground_contact_eval', '')}）",
         ]
         if tech_changes:
-            tech_lines.append('以下技术指标与 3 个月前同类型相近强度跑步相比出现改善：')
+            tech_lines.append('以下技术指标与 3 个月前同类型相近功率（±8W）跑步相比出现改善：')
             for c in tech_changes:
                 diff_str = f"{c['diff']:+.2f}".rstrip('0').rstrip('.')
                 tech_lines.append(
                     f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 长期基线 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，改善）"
                 )
-            tech_instruction = ('技术效率分析：以下技术指标与 3 个月前同类型相近强度跑步相比出现改善'
+            tech_instruction = ('技术效率分析：以下技术指标与 3 个月前同类型相近功率（±8W）跑步相比出现改善'
                                 '（进步对业余跑者意味着长期积累见效），逐项简要点评其训练学意义')
         else:
             tech_instruction = ('技术效率分析：技术指标长期稳定，本节用一句话确认即可，不要逐项罗列指标数值')
         tech_section = '\n'.join(tech_lines)
+
+        # C2：确定性问题清单（PRD F2）；为空则明确写「问题清单：无」
+        issues = data.get('issues', [])
+        if issues:
+            issue_lines = ['检测到的问题清单：']
+            for it in issues:
+                issue_lines.append(f"- {it['title']}（{it['evidence']}）")
+            issues_section = '\n'.join(issue_lines)
+        else:
+            issues_section = '检测到的问题清单：无'
 
         prompt = f"""你是一位专业的跑步教练和运动科学家。请基于跑者自述（如有，见上方「跑者自述」段落），以及以下数据，生成一份专业的跑步分析报告。
 
@@ -1392,15 +1565,18 @@ class LLMReportGenerator:
 ## 关键发现
 {chr(10).join(f'- {f}' for f in findings)}
 
+## 检测到的问题
+{issues_section}
+
 请生成包含以下 6 个小节的分析文字（小节标题格式 `## emoji 标题`，## 后一个空格、emoji 后一个空格，无其他连接符，标题文本与清单完全一致）：
-## 🔥 本次跑步小结 / ## 🏃 强度与负荷分析 / ## ⚙️ 技术效率分析 / ## 📈 能力变化趋势 / ## 🔄 分圈表现分析 / ## 🎯 改进建议
+## 🔥 本次跑步小结 / ## 🏃 强度与负荷分析 / ## ⚙️ 技术效率分析 / ## 📈 能力变化趋势 / ## 🔄 分圈表现分析 / ## 🛠️ 问题与修正
 
 1. 本次跑步小结：2-3 句通俗有温度的小结
 2. 强度与负荷分析：心率、功率、训练效果综合评价
 3. {tech_instruction}
 4. 能力变化趋势：基于历史对比解读
 5. 分圈表现分析：按前/中/后程拆解配速与心率变化，指出"热身不足""后程过猛""心率漂移"等现象，还原训练现场；段内用无序列表，每项 `- **前段（X-Y km）**：描述`，中段/后段同格式，不得写成连续长段
-6. 改进建议：只针对本次跑步暴露的问题（如分圈漂移、心率失控、配速执行偏差、天气应对失误等）提 2-5 条建议；长期固化存在的技术短板除非本次明显恶化，否则不提；按【最高优先】→【次优先】→【中长期】分层并说明紧迫性；若本次执行无大问题，允许只给 2-3 条，不强行凑数；连续编号列表，格式 `1. **【最高优先】标题**：内容`
+6. 问题与修正：严格依据上方「检测到的问题」清单（每项含数据证据），逐条按「问题 → 对训练效果的影响 → 具体怎么改」输出；建议必须可操作、与问题一一对应，禁止凑数、禁止输出与清单无关的通用建议；连续编号列表，格式 `1. **问题标题**：影响……；改进：……`；若清单为「无」且跑者自述中无明确计划/目标表述，本节只输出固定一句话「本次训练执行无明显问题，无需调整。」，不得输出任何其他内容（禁止通用建议、展望、鼓励）；计划偏离判定：仅当跑者自述包含明确计划/目标（如「原计划马配渐加速」）时，对照执行数据判断是否偏离，偏离则作为一条问题并入本节
 7. 报告最后一行输出 `<<<BRIEF>>>100字以内的简要总结（突出训练重点和特点，语言专业简洁，80-120字）<<<END>>>` 包裹的简报
 
 要求：语言专业严谨务实；Markdown 规整，次级小标题（分圈阶段、建议优先级、技术目标）必须 `**加粗**`；避免堆砌数字，重点解读趋势；建议具体可执行并给量化目标；避免绝对化表述（如"无功率漂移"），改用"未出现明显迹象""暂未观察到"；总字数 ≤1500；不要输出报告标题、类型、日期、配速等 header，直接从正文小结开始写
