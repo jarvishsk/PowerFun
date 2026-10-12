@@ -1507,23 +1507,32 @@ class LLMReportGenerator:
             runner_note_section = f"## 🏃 跑者自述（体感反馈）\n> {truncated}\n\n"
 
         # C1：技术段只在有变化时展开（tech_changes 来自 _compare_with_history）
+        # PRD：有改善项时改善项单列详情，持平项只列数值（不带评价词、不带历史中位数）；
+        # 无改善项时单行持平声明
         tech_changes = comparison.get('tech_changes', [])
-        tech_lines = [
-            f"- 步频：{raw.get('cadence', 0)} spm（{efficiency.get('cadence_eval', '')}）",
-            f"- 步幅：{raw.get('stride_length_cm', 0):.1f} cm",
-            f"- 垂直振幅比：{raw.get('vertical_ratio_pct', 0):.1f}%（{efficiency.get('vertical_ratio_eval', '')}）",
-            f"- 触地时间：{raw.get('ground_contact_ms', 0):.1f} ms（{efficiency.get('ground_contact_eval', '')}）",
+        flat_specs = [
+            ('步频', f"{raw.get('cadence', 0)} spm"),
+            ('步幅', f"{raw.get('stride_length_cm', 0):.1f} cm"),
+            ('垂直振幅比', f"{raw.get('vertical_ratio_pct', 0):.1f}%"),
+            ('触地时间', f"{raw.get('ground_contact_ms', 0):.1f} ms"),
         ]
         if tech_changes:
-            tech_lines.append('以下技术指标与 3 个月前同类型相近功率（±8W）跑步相比出现改善：')
+            tech_lines = ['【改善项】（对比 3 个月前同类型相近功率基线）']
+            improved = set()
             for c in tech_changes:
                 diff_str = f"{c['diff']:+.2f}".rstrip('0').rstrip('.')
                 tech_lines.append(
-                    f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 长期基线 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，改善）"
+                    f"- {c['metric']}：当前 {c['current']}{c['unit']} vs 基线 {c['baseline']}{c['unit']}（{diff_str}{c['unit']}，改善）"
                 )
-            tech_instruction = ('技术效率分析：以下技术指标与 3 个月前同类型相近功率（±8W）跑步相比出现改善'
-                                '（进步对业余跑者意味着长期积累见效），逐项简要点评其训练学意义')
+                improved.add(c['metric'])
+            flat_items = [f'{label} {value}' for label, value in flat_specs if label not in improved]
+            if flat_items:
+                tech_lines.append('【持平项】' + '、'.join(flat_items) + ' —— 与长期基线持平')
+            tech_instruction = ('技术效率分析：只对【改善项】逐项点评其训练学意义（每项 1-2 句）；'
+                                '【持平项】已在数据段标注持平，一律不得展开、不得评价优劣、'
+                                '不得给练习建议、不得引用其他段落的历史中位数；本节总长 ≤150 字')
         else:
+            tech_lines = ['技术指标与长期基线持平，无显著变化']
             tech_instruction = ('技术效率分析：技术指标长期稳定，本节用一句话确认即可，不要逐项罗列指标数值')
         tech_section = '\n'.join(tech_lines)
 
