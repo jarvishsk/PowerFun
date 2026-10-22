@@ -38,6 +38,19 @@ ISSUE_LOAD_MIN_SAMPLES = 2       # 近 4 次有效负荷 <2 则跳过
 ISSUE_MAX_HR_WINDOW_DAYS = 90    # 心率异常 P95 口径：近 90 天同类型
 ISSUE_MAX_HR_P95_MIN_SAMPLES = 5 # P95 口径最少样本数
 
+# ============ 趋势窗口与新鲜度门槛（PRD F1：模块级常量）============
+# 依据：45 天新鲜度门槛误伤长期回归（跨温区基线只覆盖近两个月 → 样本不足）；
+# 短期放宽到 60 天让基线样本更稳（体能月漂移 ~1.5bpm 可吸收）
+LONG_TERM_WINDOW_DAYS = 180      # 长期趋势窗口：180 天全量，取消新鲜度门槛（保留月份护栏）
+SHORT_TERM_WINDOW_DAYS = 30      # 短期状态窗口
+SHORT_TERM_FRESHNESS_DAYS = 60   # 短期基线新鲜度门槛：45 → 60 天
+
+# ============ 夏季规则（PRD F2：模块级常量）============
+# 依据：老板体感 25-27°C 舒适、28°C+ 才是热；25°C 阈值会让 56/60 次训练都成"夏季"
+SUMMER_MONTHS = {6, 7, 8, 9}     # 夏季日期维度：6-9 月
+SUMMER_TEMP_THRESHOLD = 28.0     # 夏季气温维度：中值温度 > 此值
+SUMMER_SLOPE_MULT = 2.0          # 夏季内长期判定阈值放宽倍数（心率±1→±2、配速±2→±4、效率±1→±2）
+
 
 class DeepRunAnalyzer:
     """跑步深度分析器"""
@@ -826,20 +839,23 @@ class DeepRunAnalyzer:
         else:
             return 'hot'
 
-    # 基线新鲜度门槛：最新样本距目标日超过该天数视为过期（PRD F1）
-    BASELINE_FRESHNESS_DAYS = 45
+    def _select_baseline(self, df_window: pd.DataFrame, temp_bucket: Optional[str],
+                         freshness_days: Optional[int] = None) -> tuple:
+        """三级基线选择（PRD F1）：同温区 → 不限温区 → 数据不足
 
-    def _select_baseline(self, df_window: pd.DataFrame, temp_bucket: Optional[str]) -> tuple:
-        """三级基线选择（PRD F1）：同温区(新鲜) → 不限温区(新鲜) → 数据不足
+        新鲜度门槛（最新样本距目标日 ≤ freshness_days）仅短期启用；
+        长期趋势传 None = 180 天窗口全量、取消新鲜度门槛（PRD F1）。
 
         Args:
             df_window: 已按时间窗口/类型筛选的候选样本（未做温区筛选）
             temp_bucket: 目标温区（None 表示目标无温区数据，跳过第一级）
+            freshness_days: 新鲜度门槛天数（None 表示不要求新鲜）
 
         Returns:
             (df_baseline, baseline_scope, insufficient_reason, max_sample)
-            采用时 scope 为 'same_temp'/'all_temp'，reason 为 None；
-            数据不足时返回 (空 DataFrame, None, '样本不足'/'基线过旧', 各级尝试的最大样本数)
+            采用时 scope 为 'same_temp'/'all_temp'，reason 为 None；数据不足时返回
+            (空 DataFrame, None, '样本不足'/'基线过旧', 各级尝试的最大样本数)。
+            '基线过旧' 仅在设了新鲜度门槛且最新样本超期时出现。
         """
         target_ts = pd.Timestamp(self.target_date)
         df_temp = df_window.copy()
@@ -849,31 +865,33 @@ class DeepRunAnalyzer:
             df_temp = df_temp[df_temp['_temp_bucket'].notna()]
 
         def _fresh(d: pd.DataFrame) -> bool:
-            """最新样本距目标日 ≤45 天（PRD F1 新鲜度门槛）"""
-            return (target_ts - d['date'].max()).days <= self.BASELINE_FRESHNESS_DAYS
+            """最新样本距目标日 ≤ freshness_days；None = 无新鲜度要求（长期全量窗口）"""
+            if freshness_days is None:
+                return True
+            return (target_ts - d['date'].max()).days <= freshness_days
 
         # 记录各级尝试样本数，数据不足时报告最宽口径的实际样本数（占位行显示用）
         max_sample = 0
 
-        # 1. 窗口内同温区：≥3 次且新鲜
+        # 1. 窗口内同温区：≥3 次（短期还要求新鲜）
         if temp_bucket is not None and '_temp_bucket' in df_temp.columns:
             d_same = df_temp[df_temp['_temp_bucket'] == temp_bucket]
             max_sample = max(max_sample, len(d_same))
             if len(d_same) >= 3 and _fresh(d_same):
                 return d_same, 'same_temp', None, len(d_same)
 
-        # 2. 窗口内不限温区：≥3 次且新鲜（跨温区基线）
+        # 2. 窗口内不限温区：≥3 次（跨温区基线）
         max_sample = max(max_sample, len(df_temp))
         if len(df_temp) >= 3 and _fresh(df_temp):
             return df_temp, 'all_temp', None, len(df_temp)
 
-        # 3. 数据不足：区分样本不足(n<3) / 基线过旧(最新样本>45天)
-        if len(df_temp) >= 3:
+        # 3. 数据不足：区分样本不足(n<3) / 基线过旧(设了新鲜度门槛且最新样本超期)
+        if len(df_temp) >= 3 and freshness_days is not None:
             return pd.DataFrame(), None, '基线过旧', max_sample
         return pd.DataFrame(), None, '样本不足', max_sample
     
     def _get_long_term_baseline(self, row: pd.Series, category: str, temp_bucket: str, df_all: pd.DataFrame) -> tuple:
-        """获取长期基线数据（PRD F5：三级基线选择 + 新鲜度门槛，口径与 _calc_long_term 一致）
+        """获取长期基线数据（PRD F1：180 天窗口全量、取消新鲜度门槛，口径与 _calc_long_term 一致）
 
         Returns:
             (df_baseline, baseline_scope)：数据不足（含基线过旧）时返回 (空 DataFrame, None)，
@@ -893,12 +911,12 @@ class DeepRunAnalyzer:
         else:
             df_filtered = df_filtered[df_filtered['date'] != target_ts]
         
-        # 时间窗口：前180天
-        cutoff_ts = target_ts - pd.Timedelta(days=180)
+        # 时间窗口：前180天全量（PRD F1：取消新鲜度门槛）
+        cutoff_ts = target_ts - pd.Timedelta(days=LONG_TERM_WINDOW_DAYS)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
-        
-        # 三级基线选择（PRD F5 同步 F1）：同温区(新鲜) → 不限温区(新鲜) → 数据不足
+
+        # 三级基线选择（PRD F1 同步）：同温区 → 不限温区 → 数据不足（长期无新鲜度门槛）
         df_baseline, baseline_scope, _reason, _max_sample = self._select_baseline(df_filtered, temp_bucket)
         if df_baseline.empty:
             return pd.DataFrame(), None
@@ -927,18 +945,19 @@ class DeepRunAnalyzer:
             df_filtered = df_filtered[df_filtered['date'] != target_ts]
         
         # 时间窗口：前30天
-        cutoff_ts = target_ts - pd.Timedelta(days=30)
+        cutoff_ts = target_ts - pd.Timedelta(days=SHORT_TERM_WINDOW_DAYS)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
         # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
-        # 近30天窗口天然满足 45 天新鲜度门槛
-        df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, temp_bucket)
+        # 近30天窗口天然满足 60 天新鲜度门槛（45 → 60，PRD F1）
+        df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(
+            df_filtered, temp_bucket, SHORT_TERM_FRESHNESS_DAYS)
         
         # 1次也能比，不返回"数据不足"
         if len(df_same_temp) < 1:
             return {
-                'window_days': 30,
+                'window_days': SHORT_TERM_WINDOW_DAYS,
                 'sample_size': max_sample,
                 'temp_bucket': temp_bucket,
                 'baseline_scope': baseline_scope,
@@ -982,7 +1001,7 @@ class DeepRunAnalyzer:
             return val
 
         return {
-            'window_days': 30,
+            'window_days': SHORT_TERM_WINDOW_DAYS,
             'sample_size': len(df_same_temp),
             'temp_bucket': temp_bucket_label,
             'baseline_scope': baseline_scope,
@@ -1009,6 +1028,8 @@ class DeepRunAnalyzer:
 
         # 去年同期等价窗口（对齐月日，向前相同天数），无数据时为 {'message': '数据不足'}
         yoy = self._calc_yoy(row, category, df_all)
+        # 夏季同比（PRD F2）：非夏季目标返回 None，去年窗口无数据返回 {'message': '数据不足'}
+        summer_yoy = self._calc_summer_yoy(row, df_all)
         
         # 筛选同类型数据
         df_filtered = df_all[df_all['_category_norm'] == category].copy()
@@ -1020,103 +1041,84 @@ class DeepRunAnalyzer:
         else:
             df_filtered = df_filtered[df_filtered['date'] != target_ts]
         
-        # 时间窗口：前180天
-        cutoff_ts = target_ts - pd.Timedelta(days=180)
+        # 时间窗口：前180天全量（PRD F1：取消新鲜度门槛，保留月份护栏）
+        cutoff_ts = target_ts - pd.Timedelta(days=LONG_TERM_WINDOW_DAYS)
         df_filtered = df_filtered[df_filtered['date'] >= cutoff_ts]
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
-        
-        # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
-        df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, temp_bucket)
-        
-        # 限制样本上限为30次
-        if len(df_same_temp) > 30:
-            df_same_temp = df_same_temp.sort_values('date', ascending=False).head(30)
-        
-        if len(df_same_temp) < 3:
-            return {
-                'window_days': 180,
-                'sample_size': max_sample,
-                'months_available': 0,
-                'verdict': '数据不足',
-                'message': insufficient_reason,
-                'yoy': yoy,
-            }
-        
-        # 按月分组，计算每月中位数与月样本数（使用 .copy() 避免 SettingWithCopyWarning）
-        df_same_temp = df_same_temp.copy()
-        df_same_temp['year_month'] = df_same_temp['date'].dt.to_period('M')
-        monthly_stats = df_same_temp.groupby('year_month').agg(
-            avg_hr=('avg_hr', 'median'),
-            avg_pace_sec=('avg_pace_sec', 'median'),
-            count=('avg_pace_sec', 'size'),
-        ).reset_index()
-        
-        # 过滤掉无效值
-        monthly_stats = monthly_stats.dropna(subset=['avg_hr', 'avg_pace_sec'])
-        
-        # 回归只纳入每月≥2样本的月份（PRD F1：单月单样本不进回归，样本总数报告不变）
-        regress_stats = monthly_stats[monthly_stats['count'] >= 2]
-        
-        # 剔除后至少需要3个有效月份
-        if len(regress_stats) < 3:
-            return {
-                'window_days': 180,
-                'sample_size': len(df_same_temp),
-                'months_available': len(monthly_stats),
+
+        # 三级基线选择（PRD F1）：同温区(≥3次) → 不限温区(≥3次) → 数据不足（长期无新鲜度门槛）
+        # 同温区选中但月度回归护栏不过时（如秋季 mild 桶仅零星样本），降级跨温区基线再试；
+        # 护栏数值不变，仅扩大样本池，避免稀疏同温区样本阻塞长期趋势（验收 1）
+        insufficient = None
+        reg = None
+        n_months = 0
+        baseline_scope = None
+        df_sel = pd.DataFrame()
+        for tb in ([temp_bucket, None] if temp_bucket is not None else [None]):
+            df_sel, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, tb)
+
+            # 不限样本上限：月度回归只用每月中位数，样本多不改变口径；
+            # 原 30 次上限会截掉早期月份，与 PRD F1「180 天全量」冲突（验收 1 要求覆盖 4-10 月）
+
+            if len(df_sel) < 3:
+                insufficient = {
+                    'window_days': LONG_TERM_WINDOW_DAYS,
+                    'sample_size': max_sample,
+                    'months_available': 0,
+                    'verdict': '数据不足',
+                    'message': insufficient_reason,
+                    'yoy': yoy,
+                    'is_summer': self._is_summer(row),
+                    'summer_yoy': summer_yoy,
+                }
+                continue
+
+            reg, n_months = self._long_term_regression(df_sel)
+            if reg is not None:
+                break
+            insufficient = {
+                'window_days': LONG_TERM_WINDOW_DAYS,
+                'sample_size': len(df_sel),
+                'months_available': n_months,
                 'baseline_scope': baseline_scope,
                 'verdict': '数据不足',
                 'message': '样本不足',
                 'yoy': yoy,
+                'is_summer': self._is_summer(row),
+                'summer_yoy': summer_yoy,
             }
+
+        if reg is None:
+            return insufficient
+
+        hr_slope = reg['hr_slope']  # bpm/月
+        pace_slope = reg['pace_slope']  # 秒/月
+        efficiency_slope = reg['efficiency_slope']  # 效率单位/月
         
-        # 准备线性回归数据：x 轴用真实月份间隔（PRD F1，修正原月份序号当 x 轴导致的荒谬斜率）
-        months_numeric = np.array(
-            [(p - regress_stats['year_month'].iloc[0]).n for p in regress_stats['year_month']],
-            dtype=float,
-        )
-        hr_values = regress_stats['avg_hr'].values
-        pace_values = regress_stats['avg_pace_sec'].values
-        
-        # 计算线性回归斜率（单位：每月变化）
-        hr_slope = np.polyfit(months_numeric, hr_values, 1)[0] if len(hr_values) > 1 else 0
-        pace_slope = np.polyfit(months_numeric, pace_values, 1)[0] if len(pace_values) > 1 else 0
-        
-        # 计算效率斜率（与心率/配速共用同一 x 轴）
-        efficiency_values = []
-        for _, r in regress_stats.iterrows():
-            if r['avg_pace_sec'] > 0 and r['avg_hr'] > 0:
-                efficiency_values.append(3600000.0 / (r['avg_pace_sec'] * r['avg_hr']))
-            else:
-                efficiency_values.append(np.nan)
-        efficiency_values = np.array(efficiency_values)
-        eff_mask = ~np.isnan(efficiency_values)
-        
-        if eff_mask.sum() > 1:
-            efficiency_slope = np.polyfit(months_numeric[eff_mask], efficiency_values[eff_mask], 1)[0]
-        else:
-            efficiency_slope = 0
-        
-        # 计算斜率后的判定
-        hr_slope = float(hr_slope)  # bpm/月
-        pace_slope = float(pace_slope)  # 秒/月
-        efficiency_slope = float(efficiency_slope)  # 效率单位/月
-        
+        # 夏季宽阈值（PRD F2）：夏季内判定阈值 ×2（心率±1→±2、配速±2→±4、效率±1→±2），
+        # 同数据下夏季更不易触发正负信号；非夏季阈值不变
+        is_summer = self._is_summer(row)
+        _mult = SUMMER_SLOPE_MULT if is_summer else 1.0
+        _hr_thr = 1.0 * _mult      # bpm/月
+        _pace_thr = 2.0 * _mult    # 秒/月
+        _eff_thr = 1.0 * _mult     # 效率单位/月
+
         # 综合判定 + 理由
         neg_signals = []
         pos_signals = []
-        if hr_slope < -1:
+        if hr_slope < -_hr_thr:
             pos_signals.append(f'心率月降{abs(hr_slope):.1f}bpm')
-        elif hr_slope > 1:
+        elif hr_slope > _hr_thr:
             neg_signals.append(f'心率月升{hr_slope:.1f}bpm')
-        
-        if pace_slope < -2:
+
+        if pace_slope < -_pace_thr:
             pos_signals.append(f'配速月升{abs(pace_slope):.1f}秒')
-        elif pace_slope > 2:
+        elif pace_slope > _pace_thr:
             neg_signals.append(f'配速月降{pace_slope:.1f}秒')
-        
-        if efficiency_slope > 1:
+
+        if efficiency_slope > _eff_thr:
             pos_signals.append(f'效率月升{efficiency_slope:.1f}')
-        elif efficiency_slope < -1:
+        elif efficiency_slope < -_eff_thr:
             neg_signals.append(f'效率月降{abs(efficiency_slope):.1f}')
         
         reasons = neg_signals + pos_signals
@@ -1143,10 +1145,12 @@ class DeepRunAnalyzer:
             reason = f'{reason}（跨温区基线）'
         
         return {
-            'window_days': 180,
-            'sample_size': len(df_same_temp),
-            'months_available': len(monthly_stats),
+            'window_days': LONG_TERM_WINDOW_DAYS,
+            'sample_size': len(df_sel),
+            'months_available': n_months,
             'baseline_scope': baseline_scope,
+            'is_summer': is_summer,
+            'summer_yoy': summer_yoy,
             'trend': {
                 'hr_slope_per_month': round(float(hr_slope), 2),
                 'pace_slope_per_month': round(float(pace_slope), 2),
@@ -1157,6 +1161,67 @@ class DeepRunAnalyzer:
             'yoy': yoy,
         }
     
+    def _long_term_regression(self, df_baseline: pd.DataFrame) -> tuple:
+        """月度中位数 + 线性回归核心（PRD F1 护栏：每月≥2样本进回归、总≥3个有效月份）
+
+        x 轴用真实月份间隔（PRD F1，修正原月份序号当 x 轴导致的荒谬斜率）。
+
+        Returns:
+            (回归结果 dict 或 None, 月度中位数表行数)。护栏不过时返回 (None, 实际月份数)，
+            调用方据此降级下一级（跨温区）基线再试。
+        """
+        # 按月分组，计算每月中位数与月样本数（使用 .copy() 避免 SettingWithCopyWarning）
+        df_b = df_baseline.copy()
+        df_b['year_month'] = df_b['date'].dt.to_period('M')
+        monthly_stats = df_b.groupby('year_month').agg(
+            avg_hr=('avg_hr', 'median'),
+            avg_pace_sec=('avg_pace_sec', 'median'),
+            count=('avg_pace_sec', 'size'),
+        ).reset_index()
+
+        # 过滤掉无效值
+        monthly_stats = monthly_stats.dropna(subset=['avg_hr', 'avg_pace_sec'])
+
+        # 回归只纳入每月≥2样本的月份（PRD F1：单月单样本不进回归，样本总数报告不变）
+        regress_stats = monthly_stats[monthly_stats['count'] >= 2]
+
+        # 剔除后至少需要3个有效月份
+        if len(regress_stats) < 3:
+            return None, len(monthly_stats)
+
+        # 准备线性回归数据：x 轴用真实月份间隔
+        months_numeric = np.array(
+            [(p - regress_stats['year_month'].iloc[0]).n for p in regress_stats['year_month']],
+            dtype=float,
+        )
+        hr_values = regress_stats['avg_hr'].values
+        pace_values = regress_stats['avg_pace_sec'].values
+
+        # 计算线性回归斜率（单位：每月变化）
+        hr_slope = np.polyfit(months_numeric, hr_values, 1)[0] if len(hr_values) > 1 else 0
+        pace_slope = np.polyfit(months_numeric, pace_values, 1)[0] if len(pace_values) > 1 else 0
+
+        # 计算效率斜率（与心率/配速共用同一 x 轴）
+        efficiency_values = []
+        for _, r in regress_stats.iterrows():
+            if r['avg_pace_sec'] > 0 and r['avg_hr'] > 0:
+                efficiency_values.append(3600000.0 / (r['avg_pace_sec'] * r['avg_hr']))
+            else:
+                efficiency_values.append(np.nan)
+        efficiency_values = np.array(efficiency_values)
+        eff_mask = ~np.isnan(efficiency_values)
+
+        if eff_mask.sum() > 1:
+            efficiency_slope = np.polyfit(months_numeric[eff_mask], efficiency_values[eff_mask], 1)[0]
+        else:
+            efficiency_slope = 0
+
+        return {
+            'hr_slope': float(hr_slope),
+            'pace_slope': float(pace_slope),
+            'efficiency_slope': float(efficiency_slope),
+        }, len(monthly_stats)
+
     def _calc_yoy(self, row: pd.Series, category: str, df_all: pd.DataFrame) -> Optional[dict]:
         """去年同期等价窗口对比：本次日期 -1 年，向前取与长期窗口一致的天数（180 天）
 
@@ -1210,6 +1275,104 @@ class DeepRunAnalyzer:
                 result['pace_slope_per_month'] = round(float(slope) * 30, 2)
 
         return result
+
+    def _is_summer(self, row: pd.Series) -> bool:
+        """夏季判定（PRD F2）：目标跑步日期在 SUMMER_MONTHS(6-9月) 或 中值气温 > 28°C"""
+        if self.target_date is not None and pd.Timestamp(self.target_date).month in SUMMER_MONTHS:
+            return True
+        min_temp = row.get('min_temperature')
+        max_temp = row.get('max_temperature')
+        # 温度缺失不判夏季（显式 None 检查，禁止 or 数值 fallback）
+        if min_temp is None or max_temp is None or pd.isna(min_temp) or pd.isna(max_temp):
+            return False
+        return (float(min_temp) + float(max_temp)) / 2 > SUMMER_TEMP_THRESHOLD
+
+    def _calc_summer_yoy(self, row: pd.Series, df_all: pd.DataFrame) -> Optional[dict]:
+        """夏季同比（PRD F2）：今年 6-1 至目标日 vs 去年 6-1 至去年同日（对齐月日，同温区优先）
+
+        目标跑步非夏季 → 返回 None；去年窗口无数据 → {'message': '数据不足'}
+        （两者模板与 prompt 均不显示，参照现有 yoy 处理）
+        """
+        if self.target_date is None:
+            return None
+        if not self._is_summer(row):
+            return None
+        target_ts = pd.Timestamp(self.target_date)
+
+        # 类型归一化（与 _compare_with_history 口径一致）
+        category = row.get('category', '')
+        category_norm = 'race' if category in ('full_marathon', 'half_marathon', 'race_event') else category
+        if not category_norm or '_category_norm' not in df_all.columns:
+            return {'message': '数据不足'}
+
+        activity_id = row.get('activity_id')
+
+        def _pick_window(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+            """同类型窗口样本（排除本次）"""
+            d = df_all[(df_all['_category_norm'] == category_norm) &
+                       (df_all['date'] >= start) & (df_all['date'] <= end)].copy()
+            if activity_id:
+                d = d[d['activity_id'] != activity_id]
+            else:
+                d = d[d['date'] != target_ts]
+            return d
+
+        # 今年窗口：当年 6-1 至目标日
+        curr_win = _pick_window(pd.Timestamp(target_ts.year, 6, 1), target_ts)
+        # 去年窗口：去年 6-1 至去年同日（对齐月日）
+        prev_win = _pick_window(pd.Timestamp(target_ts.year - 1, 6, 1),
+                                pd.Timestamp(target_ts.year - 1, target_ts.month, target_ts.day))
+
+        # 去年窗口同温区优先：样本 <3 放宽为同类型全温区
+        target_bucket = self._get_temp_bucket(row)
+        scope = None
+        prev_sel = pd.DataFrame()
+        if 'min_temperature' in prev_win.columns and 'max_temperature' in prev_win.columns:
+            prev_win['_temp_bucket'] = prev_win.apply(lambda r: self._get_temp_bucket(r), axis=1)
+            prev_win = prev_win[prev_win['_temp_bucket'].notna()]
+            if target_bucket is not None:
+                d_same = prev_win[prev_win['_temp_bucket'] == target_bucket]
+                if len(d_same) >= 3:
+                    prev_sel, scope = d_same, 'same_temp'
+        if prev_sel.empty and len(prev_win) >= 3:
+            prev_sel, scope = prev_win, 'all_temp'
+
+        def _clean(val):
+            if val is None or pd.isna(val):
+                return None
+            return val
+
+        def _medians(d: pd.DataFrame) -> tuple:
+            """心率/配速/效率中位数（效率需配速与心率均有效），无数据为 None"""
+            if d.empty:
+                return None, None, None
+            hr = d['avg_hr'].dropna().median() if 'avg_hr' in d.columns else None
+            pace = d['avg_pace_sec'].dropna().median() if 'avg_pace_sec' in d.columns else None
+            eff = None
+            if 'avg_hr' in d.columns and 'avg_pace_sec' in d.columns:
+                dv = d[(d['avg_pace_sec'] > 0) & (d['avg_hr'] > 0)]
+                if not dv.empty:
+                    eff = (3600000.0 / (dv['avg_pace_sec'] * dv['avg_hr'])).median()
+            return _clean(hr), _clean(pace), _clean(eff)
+
+        curr_hr, curr_pace, curr_eff = _medians(curr_win)
+        prev_hr, prev_pace, prev_eff = _medians(prev_sel)
+
+        # 去年窗口无数据 → 数据不足（模板与 prompt 均不显示）
+        if prev_hr is None and prev_pace is None:
+            return {'message': '数据不足'}
+
+        return {
+            'curr_sample_size': len(curr_win),
+            'prev_sample_size': len(prev_sel),
+            'temp_scope': scope,
+            'curr_hr_median': round(curr_hr, 0) if curr_hr is not None else None,
+            'prev_hr_median': round(prev_hr, 0) if prev_hr is not None else None,
+            'curr_pace_median_sec': round(curr_pace, 0) if curr_pace is not None else None,
+            'prev_pace_median_sec': round(prev_pace, 0) if prev_pace is not None else None,
+            'curr_eff_median': round(curr_eff, 2) if curr_eff is not None else None,
+            'prev_eff_median': round(prev_eff, 2) if prev_eff is not None else None,
+        }
 
     def _calc_percentile(self, row: pd.Series, df_baseline: pd.DataFrame) -> dict:
         """计算百分位排名"""
@@ -1645,7 +1808,17 @@ class LLMReportGenerator:
             if slope_parts:
                 yoy_line += f"（{'，'.join(slope_parts)}）"
             parts.append(yoy_line)
-        
+
+        # 夏季同比（PRD F3）：有数据才注入，注明「夏季同期对比，消除季节温差影响」
+        syoy = lt.get('summer_yoy') if lt else None
+        if syoy and syoy.get('prev_hr_median') is not None:
+            syoy_line = (f"夏季同期对比，消除季节温差影响：心率 今年 {syoy['curr_hr_median']:.0f} "
+                         f"vs 去年同期 {syoy['prev_hr_median']:.0f} bpm")
+            if syoy.get('curr_pace_median_sec') and syoy.get('prev_pace_median_sec'):
+                syoy_line += (f"，配速 {self._format_pace(syoy['curr_pace_median_sec'])} "
+                              f"vs {self._format_pace(syoy['prev_pace_median_sec'])}")
+            parts.append(syoy_line)
+
         # 追加百分位
         pct = comp.get('percentile', {})
         if pct:

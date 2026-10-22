@@ -507,6 +507,10 @@ ANALYSIS_HTML_TEMPLATE = """
                 {% if yoy and yoy.get('hr_median') is not none %}
                 <span style="color:#666;font-size:12px;">去年同期：心率 {{ yoy.get('current_hr')|int }} vs {{ yoy.get('hr_median')|int }} bpm{% if yoy.get('pace_median_sec') is not none %}，配速 {{ yoy.get('current_pace_sec')|format_pace }} vs {{ yoy.get('pace_median_sec')|format_pace }}{% endif %}</span>
                 {% endif %}
+                {% set syoy = lt.get('summer_yoy') %}
+                {% if syoy and syoy.get('prev_hr_median') is not none %}
+                <span style="color:#666;font-size:12px;">去年同期（6-9月）：心率 {{ syoy.get('curr_hr_median')|int }} vs {{ syoy.get('prev_hr_median')|int }} bpm{% if syoy.get('prev_pace_median_sec') is not none %}，配速 {{ syoy.get('curr_pace_median_sec')|format_pace }} vs {{ syoy.get('prev_pace_median_sec')|format_pace }}{% endif %}</span>
+                {% endif %}
             </span>
         </div>
         {% elif comparison.get('long_term') %}
