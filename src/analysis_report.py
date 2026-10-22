@@ -529,16 +529,16 @@ ANALYSIS_HTML_TEMPLATE = """
         
         {% if comparison.get('expected_pace') %}
         <div class="status-row">
-            <span class="status-label">预期配速</span>
+            <span class="status-label">同类型中位数</span>
             <span class="status-value">
-                预期 {{ comparison.expected_pace.expected_pace_sec|format_pace }}，
+                中位数 {{ comparison.expected_pace.expected_pace_sec|format_pace }}，
                 实际 {{ comparison.expected_pace.actual_pace_sec|format_pace }}，
                 {% if comparison.expected_pace.diff_sec < 0 %}
-                <span class="trend-badge good">比预期快 {{ (comparison.expected_pace.diff_sec | abs) | int }} 秒</span>
+                <span class="trend-badge good">快 {{ (comparison.expected_pace.diff_sec | abs) | int }} 秒</span>
                 {% elif comparison.expected_pace.diff_sec > 0 %}
-                <span class="trend-badge bad">比预期慢 {{ comparison.expected_pace.diff_sec | int }} 秒</span>
+                <span class="trend-badge bad">慢 {{ comparison.expected_pace.diff_sec | int }} 秒</span>
                 {% else %}
-                <span class="trend-badge neutral">符合预期</span>
+                <span class="trend-badge neutral">基本持平</span>
                 {% endif %}
             </span>
         </div>

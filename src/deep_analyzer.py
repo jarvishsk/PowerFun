@@ -1833,16 +1833,16 @@ class LLMReportGenerator:
         if exp:
             diff = exp['diff_sec']
             if diff < -10:
-                verdict = f'比预期快 {abs(diff):.0f}秒'
+                verdict = f'快 {abs(diff):.0f}秒'
             elif diff > 10:
-                verdict = f'比预期慢 {diff:.0f}秒'
+                verdict = f'慢 {diff:.0f}秒'
             else:
-                verdict = '符合预期'
-            parts.append(f"预期配速：{self._format_pace(exp['expected_pace_sec'])}，实际{self._format_pace(exp['actual_pace_sec'])}，{verdict}")
+                verdict = '基本持平'
+            parts.append(f"同类型中位数：{self._format_pace(exp['expected_pace_sec'])}，实际{self._format_pace(exp['actual_pace_sec'])}，{verdict}")
         
         # 明确两个关键指标的统计口径，避免 AI 点评自相矛盾
         parts.append(
-            "【指标口径说明】预期配速=同类型历史配速中位数；历史排名=按跑步经济性 (m/h)/bpm 的百分位。"
+            "【指标口径说明】同类型中位数=同类型历史配速中位数；历史排名=按跑步经济性 (m/h)/bpm 的百分位。"
         )
         
         return '\n'.join(parts) if parts else '（历史数据不足）'

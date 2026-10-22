@@ -88,7 +88,7 @@ logging.basicConfig(
 logger = logging.getLogger("PowerFun")
 
 # LLM prompt 缓存版本号：prompt 结构变更时 +1，旧版本缓存视为无效
-LLM_PROMPT_VERSION = 9
+LLM_PROMPT_VERSION = 10
 
 
 def parse_args():
