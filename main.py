@@ -88,7 +88,7 @@ logging.basicConfig(
 logger = logging.getLogger("PowerFun")
 
 # LLM prompt 缓存版本号：prompt 结构变更时 +1，旧版本缓存视为无效
-LLM_PROMPT_VERSION = 10
+LLM_PROMPT_VERSION = 11
 
 
 def parse_args():
@@ -200,7 +200,7 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
         (recent_laps, baseline_note)：recent_laps 为历史分圈数据列表，
         baseline_note 为基线构成标注（如「同温区 8 次」「跨温区 9 次」「跨全年 12 次」）
     """
-    from src.deep_analyzer import DeepRunAnalyzer
+    from src.deep_analyzer import DeepRunAnalyzer, NO_TEMP_FILTER_CATEGORIES
 
     if category and 'category' in df.columns:
         df_same = df[df['category'] == category]
@@ -212,6 +212,8 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
     df_same = df_same[df_same['date'] <= target_ts]
 
     # 基线选择（PRD F3）：近90天同温区(≥5次) → 近90天跨温区(≥5次) → 最近N次同类型(兜底)
+    # LSD 豁免温度过滤（PRD F1）：跳过同温区优先档直接不限温区档，标注「全部 LSD N 次」
+    no_temp = category in NO_TEMP_FILTER_CATEGORIES
     cutoff_90 = target_ts - pd.Timedelta(days=90)
     df_90 = df_same[df_same['date'] >= cutoff_90]
 
@@ -224,7 +226,7 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
     df_sel = None
     baseline_note = ''
     if 'min_temperature' in df_same.columns and 'max_temperature' in df_same.columns:
-        if temp_bucket is not None:
+        if temp_bucket is not None and not no_temp:
             d = _with_temp_bucket(df_90)
             d = d[d['_temp_bucket'] == temp_bucket]
             if len(d) >= 5:
@@ -239,6 +241,9 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
         # 兜底：最近 N 次同类型（跨全年）
         df_sel = df_same.sort_values('date', ascending=False).head(N)
         baseline_note = f'跨全年 {len(df_sel)} 次'
+    if no_temp and len(df_sel) > 0:
+        # LSD 统一标注全部同池（PRD F1：baseline_note 不再出现同温区/跨温区/跨全年字样）
+        baseline_note = f'全部 LSD {len(df_sel)} 次'
 
     # 按日期排序，取最近 N 次
     df_sel = df_sel.sort_values('date', ascending=False).head(N)

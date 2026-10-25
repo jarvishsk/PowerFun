@@ -51,6 +51,11 @@ SUMMER_MONTHS = {6, 7, 8, 9}     # 夏季日期维度：6-9 月
 SUMMER_TEMP_THRESHOLD = 28.0     # 夏季气温维度：中值温度 > 此值
 SUMMER_SLOPE_MULT = 2.0          # 夏季内长期判定阈值放宽倍数（心率±1→±2、配速±2→±4、效率±1→±2）
 
+# ============ 温度过滤豁免课型（PRD F1：模块级常量）============
+# 依据：老板 2026-10-25 指令——LSD 是「时间、天气、状态都合适才安排」的条件自筛选课型，
+# 跑了 LSD 即说明当天具备比较基础，因此 LSD 对比不需要温度过滤、直接全部同池对比
+NO_TEMP_FILTER_CATEGORIES = {'lsd'}
+
 
 class DeepRunAnalyzer:
     """跑步深度分析器"""
@@ -840,11 +845,14 @@ class DeepRunAnalyzer:
             return 'hot'
 
     def _select_baseline(self, df_window: pd.DataFrame, temp_bucket: Optional[str],
-                         freshness_days: Optional[int] = None) -> tuple:
+                         freshness_days: Optional[int] = None,
+                         category: Optional[str] = None) -> tuple:
         """三级基线选择（PRD F1）：同温区 → 不限温区 → 数据不足
 
         新鲜度门槛（最新样本距目标日 ≤ freshness_days）仅短期启用；
         长期趋势传 None = 180 天窗口全量、取消新鲜度门槛（PRD F1）。
+        豁免温度过滤课型（NO_TEMP_FILTER_CATEGORIES，PRD F1）：跳过同温区 tier，
+        直接不限温区池，scope='no_temp'。
 
         Args:
             df_window: 已按时间窗口/类型筛选的候选样本（未做温区筛选）
@@ -853,7 +861,7 @@ class DeepRunAnalyzer:
 
         Returns:
             (df_baseline, baseline_scope, insufficient_reason, max_sample)
-            采用时 scope 为 'same_temp'/'all_temp'，reason 为 None；数据不足时返回
+            采用时 scope 为 'same_temp'/'all_temp'/'no_temp'，reason 为 None；数据不足时返回
             (空 DataFrame, None, '样本不足'/'基线过旧', 各级尝试的最大样本数)。
             '基线过旧' 仅在设了新鲜度门槛且最新样本超期时出现。
         """
@@ -872,6 +880,16 @@ class DeepRunAnalyzer:
 
         # 记录各级尝试样本数，数据不足时报告最宽口径的实际样本数（占位行显示用）
         max_sample = 0
+
+        # 0. 豁免温度过滤课型（PRD F1）：跳过同温区 tier，直接不限温区池，scope='no_temp'
+        # 样本数门槛（≥3）与 freshness 要求不变；无温区记录仍不进池（缺失温度不误判为冷天）
+        if category in NO_TEMP_FILTER_CATEGORIES:
+            max_sample = max(max_sample, len(df_temp))
+            if len(df_temp) >= 3 and _fresh(df_temp):
+                return df_temp, 'no_temp', None, len(df_temp)
+            if len(df_temp) >= 3 and freshness_days is not None:
+                return pd.DataFrame(), None, '基线过旧', max_sample
+            return pd.DataFrame(), None, '样本不足', max_sample
 
         # 1. 窗口内同温区：≥3 次（短期还要求新鲜）
         if temp_bucket is not None and '_temp_bucket' in df_temp.columns:
@@ -917,7 +935,9 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
 
         # 三级基线选择（PRD F1 同步）：同温区 → 不限温区 → 数据不足（长期无新鲜度门槛）
-        df_baseline, baseline_scope, _reason, _max_sample = self._select_baseline(df_filtered, temp_bucket)
+        # LSD 等豁免课型直接不限温区池，scope='no_temp'
+        df_baseline, baseline_scope, _reason, _max_sample = self._select_baseline(
+            df_filtered, temp_bucket, category=category)
         if df_baseline.empty:
             return pd.DataFrame(), None
         
@@ -950,9 +970,10 @@ class DeepRunAnalyzer:
         df_filtered = df_filtered[df_filtered['date'] <= target_ts]
         
         # 三级基线选择（PRD F1）：同温区(≥3次且新鲜) → 不限温区(≥3次且新鲜) → 数据不足
+        # LSD 等豁免课型直接不限温区池，scope='no_temp'
         # 近30天窗口天然满足 60 天新鲜度门槛（45 → 60，PRD F1）
         df_same_temp, baseline_scope, insufficient_reason, max_sample = self._select_baseline(
-            df_filtered, temp_bucket, SHORT_TERM_FRESHNESS_DAYS)
+            df_filtered, temp_bucket, SHORT_TERM_FRESHNESS_DAYS, category=category)
         
         # 1次也能比，不返回"数据不足"
         if len(df_same_temp) < 1:
@@ -1055,7 +1076,8 @@ class DeepRunAnalyzer:
         baseline_scope = None
         df_sel = pd.DataFrame()
         for tb in ([temp_bucket, None] if temp_bucket is not None else [None]):
-            df_sel, baseline_scope, insufficient_reason, max_sample = self._select_baseline(df_filtered, tb)
+            df_sel, baseline_scope, insufficient_reason, max_sample = self._select_baseline(
+                df_filtered, tb, category=category)
 
             # 不限样本上限：月度回归只用每月中位数，样本多不改变口径；
             # 原 30 次上限会截掉早期月份，与 PRD F1「180 天全量」冲突（验收 1 要求覆盖 4-10 月）
@@ -1073,7 +1095,9 @@ class DeepRunAnalyzer:
                 }
                 continue
 
-            reg, n_months = self._long_term_regression(df_sel)
+            # 月度分组门槛（PRD F2）：LSD 每月≥1样本纳入回归，其他类型保持≥2；总≥3有效月份不变
+            _monthly_min = 1 if category in NO_TEMP_FILTER_CATEGORIES else 2
+            reg, n_months = self._long_term_regression(df_sel, min_monthly_samples=_monthly_min)
             if reg is not None:
                 break
             insufficient = {
@@ -1161,8 +1185,12 @@ class DeepRunAnalyzer:
             'yoy': yoy,
         }
     
-    def _long_term_regression(self, df_baseline: pd.DataFrame) -> tuple:
-        """月度中位数 + 线性回归核心（PRD F1 护栏：每月≥2样本进回归、总≥3个有效月份）
+    def _long_term_regression(self, df_baseline: pd.DataFrame,
+                              min_monthly_samples: int = 2) -> tuple:
+        """月度中位数 + 线性回归核心（PRD F1 护栏：总≥3个有效月份）
+
+        min_monthly_samples（PRD F2）：月度点进回归的月样本门槛，
+        LSD 等豁免课型为 1（每月≥1样本纳入），其他类型保持 2（10-04 教训的护栏）。
 
         x 轴用真实月份间隔（PRD F1，修正原月份序号当 x 轴导致的荒谬斜率）。
 
@@ -1182,8 +1210,8 @@ class DeepRunAnalyzer:
         # 过滤掉无效值
         monthly_stats = monthly_stats.dropna(subset=['avg_hr', 'avg_pace_sec'])
 
-        # 回归只纳入每月≥2样本的月份（PRD F1：单月单样本不进回归，样本总数报告不变）
-        regress_stats = monthly_stats[monthly_stats['count'] >= 2]
+        # 回归只纳入每月样本数达标的月份（PRD F2：LSD ≥1/月，其他类型 ≥2/月；样本总数报告不变）
+        regress_stats = monthly_stats[monthly_stats['count'] >= min_monthly_samples]
 
         # 剔除后至少需要3个有效月份
         if len(regress_stats) < 3:
@@ -1763,6 +1791,11 @@ class LLMReportGenerator:
         if not comp:
             return '（无足够历史数据对比）'
         parts = []
+        # no_temp 同池标注（PRD F2）：LSD 豁免温度过滤时，对比段标注同池口径
+        _lt_scope = (comp.get('long_term') or {}).get('baseline_scope')
+        _st_scope = (comp.get('short_term') or {}).get('baseline_scope')
+        if 'no_temp' in (_lt_scope, _st_scope):
+            parts.append('【全部 LSD 同池对比】')
         ability = comp.get('ability', {})
         if 'hr_trend' in ability:
             t = ability['hr_trend']
