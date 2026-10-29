@@ -504,15 +504,21 @@ ANALYSIS_HTML_TEMPLATE = """
                 {% if lt.get('reason') %}
                 （{{ lt.reason }}）
                 {% endif %}
-                {% if yoy and yoy.get('hr_median') is not none %}
-                <span style="color:#666;font-size:12px;">去年同期：心率 {{ yoy.get('current_hr')|int }} vs {{ yoy.get('hr_median')|int }} bpm{% if yoy.get('pace_median_sec') is not none %}，配速 {{ yoy.get('current_pace_sec')|format_pace }} vs {{ yoy.get('pace_median_sec')|format_pace }}{% endif %}</span>
-                {% endif %}
-                {% set syoy = lt.get('summer_yoy') %}
-                {% if syoy and syoy.get('prev_hr_median') is not none %}
-                <span style="color:#666;font-size:12px;">去年同期（6-9月）：心率 {{ syoy.get('curr_hr_median')|int }} vs {{ syoy.get('prev_hr_median')|int }} bpm{% if syoy.get('prev_pace_median_sec') is not none %}，配速 {{ syoy.get('curr_pace_median_sec')|format_pace }} vs {{ syoy.get('prev_pace_median_sec')|format_pace }}{% endif %}</span>
-                {% endif %}
             </span>
         </div>
+        {% if yoy and yoy.get('hr_median') is not none %}
+        <div class="status-row">
+            <span class="status-label">去年同期</span>
+            <span class="status-value">心率 {{ yoy.get('current_hr')|int }} vs {{ yoy.get('hr_median')|int }} bpm{% if yoy.get('pace_median_sec') is not none %}，配速 {{ yoy.get('current_pace_sec')|format_pace }} vs {{ yoy.get('pace_median_sec')|format_pace }}{% endif %}</span>
+        </div>
+        {% endif %}
+        {% set syoy = lt.get('summer_yoy') %}
+        {% if syoy and syoy.get('prev_hr_median') is not none %}
+        <div class="status-row">
+            <span class="status-label">夏季同比</span>
+            <span class="status-value">（6-9月）心率 {{ syoy.get('curr_hr_median')|int }} vs {{ syoy.get('prev_hr_median')|int }} bpm{% if syoy.get('prev_pace_median_sec') is not none %}，配速 {{ syoy.get('curr_pace_median_sec')|format_pace }} vs {{ syoy.get('prev_pace_median_sec')|format_pace }}{% endif %}</span>
+        </div>
+        {% endif %}
         {% elif comparison.get('long_term') %}
         <div class="status-row">
             <span class="status-label">长期趋势</span>
@@ -543,15 +549,6 @@ ANALYSIS_HTML_TEMPLATE = """
             </span>
         </div>
         {% endif %}
-    </div>
-    {% endif %}
-
-    {% if findings %}
-    <div class="section">
-        <h2>🔍 关键发现</h2>
-        {% for f in findings %}
-        <div class="finding">{{ f }}</div>
-        {% endfor %}
     </div>
     {% endif %}
 

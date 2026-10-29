@@ -483,48 +483,37 @@ class DeepRunAnalyzer:
         return result
     
     def _extract_findings(self, result: dict) -> list:
-        """从分析结果中提取关键发现"""
+        """从分析结果中提取原始信号（指标/差值/方向），供 LLM 选择性融合进点评"""
         findings = []
         comparison = result.get('comparison', {})
         ability = comparison.get('ability', {})
         economy = comparison.get('economy', {})
-        
+
         if 'hr_trend' in ability:
             t = ability['hr_trend']
-            if t['diff'] < -3:
-                findings.append(f"心率下降 {abs(t['diff']):.0f}bpm，心肺能力提升明显")
-            elif t['diff'] > 3:
-                findings.append(f"心率上升 {t['diff']:.0f}bpm，可能疲劳积累或恢复不足")
-        
+            if abs(t['diff']) > 3:
+                findings.append({'metric': '心率', 'diff': t['diff'], 'unit': 'bpm', 'direction': '下降' if t['diff'] < 0 else '上升'})
+
         if 'pace_trend' in ability:
             t = ability['pace_trend']
-            if t['diff'] < -5:
-                findings.append(f"配速提升 {abs(t['diff']):.0f}秒/公里，速度能力增强")
-            elif t['diff'] > 5:
-                findings.append(f"配速下降 {t['diff']:.0f}秒/公里，可能状态不佳")
-        
+            if abs(t['diff']) > 5:
+                findings.append({'metric': '配速', 'diff': t['diff'], 'unit': '秒/公里', 'direction': '提升' if t['diff'] < 0 else '下降'})
+
         if 'power_trend' in ability:
             t = ability['power_trend']
             if abs(t['diff']) > 10:
-                findings.append(f"功率变化 {t['diff']:+.0f}W，输出能力{'增强' if t['diff'] > 0 else '下降'}")
-        
+                findings.append({'metric': '功率', 'diff': t['diff'], 'unit': 'W', 'direction': '增强' if t['diff'] > 0 else '下降'})
+
         if 'vr_trend' in economy:
             t = economy['vr_trend']
-            if t['diff'] < -0.5:
-                findings.append(f"垂直振幅比下降 {abs(t['diff']):.1f}%，跑步经济性改善")
-            elif t['diff'] > 0.5:
-                findings.append(f"垂直振幅比上升 {t['diff']:.1f}%，跑步经济性下降")
-        
+            if abs(t['diff']) > 0.5:
+                findings.append({'metric': '垂直振幅比', 'diff': t['diff'], 'unit': '%', 'direction': '改善' if t['diff'] < 0 else '下降'})
+
         if 'hr_pace_ratio' in economy:
             t = economy['hr_pace_ratio']
-            if t['diff'] > 1:
-                findings.append(f"效率（(m/h)/bpm）提升，跑步经济性改善")
-            elif t['diff'] < -1:
-                findings.append(f"效率（(m/h)/bpm）下降，跑步经济性变差")
-        
-        if not findings:
-            findings.append("各项指标稳定，保持当前训练节奏")
-        
+            if abs(t['diff']) > 1:
+                findings.append({'metric': '效率((m/h)/bpm)', 'diff': t['diff'], 'unit': '', 'direction': '提升' if t['diff'] > 0 else '下降'})
+
         return findings
     
     def _analyze_laps(self, lap_data: list[dict], recent_laps: list[list[dict]]) -> dict:
@@ -1679,7 +1668,14 @@ class LLMReportGenerator:
         intensity = data.get('intensity', {})
         efficiency = data.get('efficiency', {})
         comparison = data.get('comparison', {})
+        # C3：原始信号清单（findings，指标/差值/方向），仅作 LLM 参考，禁止照抄
         findings = data.get('findings', [])
+        if findings:
+            signal_lines = chr(10).join(
+                f"- {f['metric']}: {f['diff']:+.1f}{f['unit']}（{f['direction']}）" for f in findings
+            )
+        else:
+            signal_lines = '无'
         laps = data.get('laps', {})
         pa_hr = data.get('pa_hr', {})
 
@@ -1762,8 +1758,8 @@ class LLMReportGenerator:
 {self._format_comparison(comparison)}
 {lap_section}
 {temp_impact_section}
-## 关键发现
-{chr(10).join(f'- {f}' for f in findings)}
+## 原始信号
+{signal_lines}
 
 ## 检测到的问题
 {issues_section}
@@ -1782,6 +1778,7 @@ class LLMReportGenerator:
 5. 分圈表现分析：按前/中/后程拆解配速与心率变化，指出"热身不足""后程过猛""心率漂移"等现象，还原训练现场；段内用无序列表，每项 `- **前段（X-Y km）**：描述`，中段/后段同格式，不得写成连续长段
 6. 问题与修正：严格依据上方「检测到的问题」清单（每项含数据证据），逐条按「问题 → 对训练效果的影响 → 具体怎么改」输出；建议必须可操作、与问题一一对应，禁止凑数、禁止输出与清单无关的通用建议；连续编号列表，格式 `1. **问题标题**：影响……；改进：……`；若清单为「无」且跑者自述中无明确计划/目标表述，本节只输出固定一句话「本次训练执行无明显问题，无需调整。」，不得输出任何其他内容（禁止通用建议、展望、鼓励）；计划偏离判定：仅当跑者自述包含明确计划/目标（如「原计划马配渐加速」）时，对照执行数据判断是否偏离，偏离则作为一条问题并入本节
 7. 报告最后一行输出 `<<<BRIEF>>>100字以内的简要总结（突出训练重点和特点，语言专业简洁，80-120字）<<<END>>>` 包裹的简报
+8. 以下为原始信号清单，仅将有训练学意义的信号融入相关小节点评，无意义的直接忽略，禁止照抄清单条目
 
 要求：语言专业严谨务实；Markdown 规整，次级小标题（分圈阶段、建议优先级、技术目标）必须 `**加粗**`；避免堆砌数字，重点解读趋势；建议具体可执行并给量化目标；避免绝对化表述（如"无功率漂移"），改用"未出现明显迹象""暂未观察到"；总字数 ≤1500；不要输出报告标题、类型、日期、配速等 header，直接从正文小结开始写
 """

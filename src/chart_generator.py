@@ -929,6 +929,12 @@ class ChartGenerator:
         # 计算 beats/km
         valid['beats_km'] = valid['avg_hr'] * (valid['avg_pace_sec'] / 60.0)
 
+        # y 轴动态范围：按数据 min/max 加 9% padding，保证极端值完整可见（无硬编码下限）
+        vmin = float(valid['beats_km'].min())
+        vmax = float(valid['beats_km'].max())
+        ypad = max(vmax - vmin, 1.0) * 0.09
+        beats_yaxis_range = [vmin - ypad, vmax + ypad]
+
         # 计算气温
         has_temp = 'min_temperature' in valid.columns and 'max_temperature' in valid.columns
         if has_temp:
@@ -1019,7 +1025,7 @@ class ChartGenerator:
         fig.update_layout(
             title=None,
             xaxis=dict(title='日期', tickangle=0, type='date', tickformat='%m-%d'),
-            yaxis=dict(title='心率成本 (beats/km)'),
+            yaxis=dict(title='心率成本 (beats/km)', range=beats_yaxis_range),
             height=450,
             **self._common_layout_style,
         )
