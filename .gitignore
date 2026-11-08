@@ -39,3 +39,10 @@ Thumbs.db
 
 # Backup files
 *.bak
+
+# === KimiWork 迁移新增（MIGRATION_PRD Step 0）===
+.migration-research/
+.runtime/
+.secrets/
+cache/
+data/

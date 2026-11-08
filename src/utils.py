@@ -1,9 +1,8 @@
 """PowerFun 共享工具函数
 
-集中处理跨模块重复的格式化、文件复制等辅助逻辑。
+集中处理跨模块重复的格式化等辅助逻辑。
 """
 
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -46,15 +45,6 @@ def format_duration_hm(total_min: float) -> str:
     return f"{h}h{m}m"
 
 
-def copy_to_icloud(src_path: Path, icloud_dir: Path, filename: str) -> Path:
-    """复制报告到 iCloud，先删除旧文件，再返回目标路径"""
-    icloud_dir.mkdir(parents=True, exist_ok=True)
-    dest = icloud_dir / filename
-    dest.unlink(missing_ok=True)
-    shutil.copy2(src_path, dest)
-    return dest
-
-
 def load_version(version_path: Optional[Path] = None) -> str:
     """从 VERSION 文件读取版本号"""
     try:
@@ -63,3 +53,29 @@ def load_version(version_path: Optional[Path] = None) -> str:
         return version_path.read_text().strip()
     except Exception:
         return '3.0'
+
+
+# 报告所需的本地静态资源（位于项目 static/，生成报告时复制到 <报告目录>/assets/）
+REPORT_ASSET_FILES = [
+    'plotly-2.27.0.min.js',
+    'jquery.min.js',
+    'jquery.dataTables.min.js',
+    'jquery.dataTables.min.css',
+    'datatables-zh.json',
+]
+
+
+def ensure_report_assets(output_dir) -> Path:
+    """将项目 static/ 报告资源复制到 <output_dir>/assets/，确保报告相对引用始终有效。
+
+    复制整个 reports/ 目录后，HTML 中的相对资源链接（assets/ 或 ../assets/）依然有效。
+    """
+    import shutil
+    src_dir = Path(__file__).resolve().parent.parent / 'static'
+    dest_dir = Path(output_dir) / 'assets'
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for name in REPORT_ASSET_FILES:
+        src = src_dir / name
+        if src.exists():
+            shutil.copy2(src, dest_dir / name)
+    return dest_dir

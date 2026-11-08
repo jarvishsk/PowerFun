@@ -555,10 +555,10 @@ class ReportGenerator:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>跑步数据分析报告 - {{ stats.get('date_range', {}).get('start', '') }} 至 {{ stats.get('date_range', {}).get('end', '') }}</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/css/jquery.dataTables.min.css">
-    <script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
-    <script src="https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/js/jquery.dataTables.min.js"></script>
+    <script src="assets/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="assets/jquery.dataTables.min.css">
+    <script src="assets/jquery.min.js"></script>
+    <script src="assets/jquery.dataTables.min.js"></script>
     <style>
         :root {
             --z1-color: #808080; --z2-color: #87CEEB; --z3-color: #32CD32;
@@ -910,7 +910,7 @@ class ReportGenerator:
         $(document).ready(function() {
             $('#data-table').DataTable({
                 pageLength: 50,
-                language: { url: 'https://cdn.bootcdn.net/ajax/libs/datatables/1.10.21/i18n/zh.json' },
+                language: { url: 'assets/datatables-zh.json' },
                 order: [[0, 'desc']]
             });
         });

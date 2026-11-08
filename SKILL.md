@@ -1,52 +1,61 @@
 ---
 name: powerfun
-description: "跑步数据分析。当用户要求分析跑步数据、跑分、查看跑步报告时使用。基于 Garmin Connect 数据，生成 HTML/PDF 综合报告和深度分析报告。"
-metadata:
-  {"openclaw": {"requires": {"bins": ["python3"]}}}
+description: 跑步数据分析（PowerFun）——Garmin 跑步数据更新、单次深析、跑分查询、体感自述教练点评。触发词：跑步分析、跑分、更新跑步数据、深度分析、体感。项目位于 /Users/jarvis/Projects/KimiWork/PowerFun。
 ---
 
-# PowerFun 跑步数据分析技能
+# PowerFun 跑步分析（KimiWork 入口）
 
-基于 Garmin Connect (China) 数据的跑步分析：报告生成 + 单次跑步深度分析（含 AI 教练点评）。
+项目根：`/Users/jarvis/Projects/KimiWork/PowerFun`，解释器：`.venv/bin/python`（Python 3.14）。
+所有命令在项目根执行。确定性分析由 Python 内核完成，模型只解释已计算事实，不重新推导数值。
 
-## 执行约定
+## 触发语义与命令
 
-- 所有命令必须用项目 venv：`cd ~/Projects/skills/PowerFun && source venv/bin/activate`
-- 必须用 `exec` + `yieldMs=180000`（3 分钟）前台运行，LLM 期间日志实时返回；不用 background
-- `KIMI_API_KEY` 从 `~/.openclaw/.env` 自动加载，无需手动设置
+### “跑步分析，体感：……” / 单次深析（两阶段模型编排）
 
-**「跑步分析」类触发**：直接跑 `python3 main.py --load-parquet --deep-analyze latest --user-note "<体感>"`。不手动查日期、不打印数据行。`latest` 自动解析为 parquet 中最新一次跑步；当天重复运行会自动复用 LLM 缓存（秒回），需要重新生成时加 `--force`。
+```bash
+# 第一阶段：计算分析数据；缓存未命中时输出 LLM_REQUEST_REQUIRED=<path> 并退出
+.venv/bin/python main.py --load-parquet --deep-analyze latest --user-note "<体感>" --prepare-llm
 
-## 运行模式
+# KimiWork 会话读取 request.md，以当前模型生成六小节点评（含 <<<BRIEF>>>...<<<END>>>），
+# 写入 .runtime/llm/<activity_id>/response.md —— 模型只解释事实，不重新计算指标
 
-| 场景 | 命令 |
-|------|------|
-| 拉取最新数据 + 生成完整报告 | `python3 main.py` |
-| 仅生成报告（跳过 API 拉取） | `python3 main.py --load-parquet` |
-| 深析某一天 | `python3 main.py --load-parquet --deep-analyze YYYY-MM-DD` |
-| 深析最新一次 + 体感备注 | `python3 main.py --load-parquet --deep-analyze latest --user-note "<体感>"` |
-| 强制重新生成（覆盖缓存） | 以上命令加 `--force` |
-| 首次使用（需账号密码） | `python3 main.py --email EMAIL --password PASSWORD` |
-| 仅生成 PDF（从已有 HTML 转换） | `python3 main.py --pdf-only` |
-| 补拉历史数据 | `python3 main.py --backfill-since 2025-01-01` |
+# 第二阶段：校验 response（activity_id/体感哈希/Prompt 版本、六小节顺序、BRIEF 块）并渲染
+.venv/bin/python main.py --load-parquet --deep-analyze latest --user-note "<体感>" \
+  --llm-response .runtime/llm/<activity_id>/response.md
+```
 
-> `--load-parquet` 需要已存在的 `~/Documents/Run/running_data.parquet`，首次使用先完整跑一次 `python3 main.py`。
-> 冷启动：先看 `~/Projects/skills/PowerFun/.data/garmin_tokens/` 是否有 token，没有则需用户提供 Garmin 账号密码。
+- 缓存命中时第一阶段直接输出 `LLM_CACHE_HIT` 并渲染报告，无需模型。
+- 校验失败会指出问题并退出：修正 response.md 后重跑第二阶段；不会写缓存、不会生成正式报告。
+- 六小节标题（顺序固定）：🔥 本次跑步小结 / 🏃 强度与负荷分析 / ⚙️ 技术效率分析 / 📈 能力变化趋势 / 🔄 分圈表现分析 / 🛠️ 问题与修正。
 
-## 心率和功率参数
+### “跑分 2026-11-06”
 
-在 `src/config.py` 的 `USER_CONFIG` 中配置：`max_hr`（当前 188）、`resting_hr`（当前 60）。用户实测心率不一致时先改配置再运行。
+`.venv/bin/python main.py --load-parquet --deep-analyze 2026-11-06`（日期、latest 或标题关键词；匹配多条会列出候选要求更精确条件）。
 
-## 输出
+### “更新跑步数据并生成报告”
 
-| 文件 | 路径 |
-|------|------|
-| 综合报告 (HTML) | `~/Documents/Run/PowerFun.html` |
-| 深析报告 (HTML) | `~/Documents/Run/PowerFun_Reports/run_analysis_YYYYMMDD_<activity_id>.html` |
-| iCloud 同步 | `~/Library/Mobile Documents/com~apple~CloudDocs/RUN/`（PowerFun.html + 深度分析报告_*.html） |
+```bash
+# 增量拉取（中国区 Garmin Personal API），先写隔离目录验证
+.venv/bin/python main.py --fetch-new --stage .runtime/garmin-validation
+# 字段与分圈对照通过后，正式写入（自动备份原数据到 .runtime/backups/<时间戳>/）
+.venv/bin/python main.py --fetch-new
+# 再生成报告（最新深析 + 综合报告）
+.venv/bin/python main.py --load-parquet
+```
 
-## ⚠️ LLM 故障处理
+在线步骤前置条件：`.secrets/garmin-personal-api-key`（中国区 Personal API Key，权限 600）。
+密钥文件不存在时停止在线步骤，请老板在本机写入，不要在聊天中发送 Key。
 
-深度分析依赖 Kimi Code API（`api.kimi.com/coding/v1/chat/completions`，模型 `kimi-for-coding`）。
-LLM 调用失败不中断报告，AI 点评区显示降级文案（`API Key 未配置` / `AI 分析调用失败: …`），日志有具体错误。
-故障时向用户报告错误原因，不自行换模型或改配置。
+## 产物位置
+
+- 综合报告：`reports/PowerFun.html`（10 个图表，本地静态资源 `reports/assets/`）
+- 深析报告：`reports/PowerFun_Reports/run_analysis_*.html`
+- LLM 缓存：`cache/llm/llm_<activity_id>.md`（frontmatter 含 user_note_hash / model / prompt_version）
+
+## 禁止事项
+
+- 不得读取 OpenClaw 环境（`~/.openclaw/.env`）、不得使用任何外部模型 API Key。
+- 不得生成 PDF、不得安装 Playwright/Chromium。
+- 不得访问、写入或清理任何 iCloud 文件或目录。
+- 不得让模型替代 Python 重新计算指标；数值一律来自确定性分析内核。
+- 不得创建定时任务；不得把数据、报告或凭据上传到公开仓库。

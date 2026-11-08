@@ -57,7 +57,6 @@ import getpass
 import json
 import logging
 import os
-import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -68,11 +67,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.config import DEFAULT_CONFIG, USER_CONFIG, HR_ZONE_PERCENTAGES, FIELD_MAPPING
 from src.utils import (
-    copy_to_icloud,
     format_duration_hm,
     format_duration_hhmmss,
     format_pace_chinese,
     format_pace_mmss,
+    ensure_report_assets,
 )
 from src.data_fetcher import GarminDataFetcher, AuthenticationError
 from src.data_processor import DataProcessor
@@ -136,8 +135,16 @@ def parse_args():
                         help="对所有跑步批量生成深析报告")
     parser.add_argument("--load-parquet", action="store_true",
                         help="从全量数据文件加载（跳过 API 拉取和清洗，直接从 parquet 读取报告数据）")
-    parser.add_argument("--pdf-only", action="store_true",
-                        help="仅生成 PDF 报告（从已有 HTML 转换，不重新分析数据）")
+    parser.add_argument("--prepare-llm", action="store_true",
+                        help="第一阶段：计算分析数据并准备 KimiWork 模型请求（写 .runtime/llm/<id>/request.md）")
+    parser.add_argument("--llm-response", type=str, default=None,
+                        help="第二阶段：使用 KimiWork 已生成的 response.md 渲染深析报告")
+    parser.add_argument("--garmin-check", action="store_true",
+                        help="仅验证 Garmin Personal API 认证、资料和单次活动读取，不改正式数据")
+    parser.add_argument("--fetch-new", action="store_true",
+                        help="增量拉取 Garmin 新增数据（默认写正式 data/，配合 --stage 写隔离目录）")
+    parser.add_argument("--stage", type=str, default=None,
+                        help="隔离输出目录（仅 --fetch-new 有效）：原始响应、处理结果和分圈全部写入该目录，不覆盖正式 data/")
     parser.add_argument("--user-note", type=str, default=None,
                         help="跑者体感备注（仅 --deep-analyze 模式有效，将与客观数据一起提交给 AI 综合分析）")
     parser.add_argument("--backfill-since", type=str, default=None,
@@ -302,10 +309,10 @@ def _build_pa_hr_history_chart(df: pd.DataFrame, activity_id, target_ts,
     return chart_gen.create_pa_hr_trend_chart(pa_hr_history_list)
 
 
-def _llm_cache_path(analysis_dir: Path, activity_id):
-    """深析 LLM 输出缓存路径；无有效 activity_id 时返回 None（不缓存）"""
+def _llm_cache_path(activity_id):
+    """深析 LLM 输出缓存路径（项目级 cache/llm/）；无有效 activity_id 时返回 None（不缓存）"""
     if activity_id and str(activity_id) not in ('', 'unknown', 'None'):
-        return analysis_dir / "cache" / f"llm_{activity_id}.md"
+        return Path(DEFAULT_CONFIG['cache_dir']) / "llm" / f"llm_{activity_id}.md"
     return None
 
 
@@ -313,6 +320,53 @@ def _user_note_hash(user_note: str) -> str:
     """user_note 的 sha256（未传备注时为空串）"""
     import hashlib
     return hashlib.sha256(user_note.encode('utf-8')).hexdigest() if user_note else ''
+
+
+# 教练点评六个必需小节（完整且顺序固定）
+REQUIRED_LLM_SECTIONS = [
+    '## 🔥 本次跑步小结',
+    '## 🏃 强度与负荷分析',
+    '## ⚙️ 技术效率分析',
+    '## 📈 能力变化趋势',
+    '## 🔄 分圈表现分析',
+    '## 🛠️ 问题与修正',
+]
+
+
+def _validate_llm_response(content: str) -> list:
+    """校验 KimiWork 生成的 response：六小节完整且顺序正确、含 BRIEF 块。
+
+    Returns:
+        问题列表；空列表表示通过
+    """
+    problems = []
+    pos = 0
+    for sec in REQUIRED_LLM_SECTIONS:
+        idx = content.find(sec, pos)
+        if idx == -1:
+            problems.append(f"缺少或顺序错误的小节: {sec}")
+            break
+        pos = idx + len(sec)
+    if '<<<BRIEF>>>' not in content or '<<<END>>>' not in content:
+        problems.append("缺少 <<<BRIEF>>>...<<<END>>> 简报块")
+    return problems
+
+
+def _write_llm_request(activity_id, prompt: str, user_note: str) -> Path:
+    """第一阶段：将模型请求写入 .runtime/llm/<activity_id>/，并记录请求上下文"""
+    req_dir = Path(DEFAULT_CONFIG['llm_runtime_dir']) / str(activity_id)
+    req_dir.mkdir(parents=True, exist_ok=True)
+    request_path = req_dir / "request.md"
+    request_path.write_text(prompt, encoding='utf-8')
+    (req_dir / "context.json").write_text(
+        json.dumps({
+            'activity_id': str(activity_id),
+            'user_note_hash': _user_note_hash(user_note),
+            'prompt_version': LLM_PROMPT_VERSION,
+        }, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    return request_path
 
 
 def _read_llm_cache(cache_path, user_note: str):
@@ -360,50 +414,90 @@ def _write_llm_cache(cache_path, user_note: str, model: str, content: str) -> No
         logger.warning(f"LLM 缓存写入失败: {e}")
 
 
-def _llm_report_degraded(llm_report: str) -> bool:
-    """LLM 输出是否为降级文案（未配置/调用失败），降级时不写缓存"""
-    return (not llm_report) or ('未配置' in llm_report) or ('失败' in llm_report)
+def _resolve_llm_report(df: pd.DataFrame, analysis_data: dict, activity_id,
+                        user_note: str = None, force: bool = False,
+                        response_path: str = None, on_miss: str = 'exit') -> tuple:
+    """KimiWork 两阶段模型编排，返回 (llm_report, actual_model)。
 
+    流程：
+    - 缓存命中（且非 --force、未指定 --llm-response）：打印 LLM_CACHE_HIT，直接渲染。
+    - 指定 --llm-response（第二阶段）：校验 activity_id/请求上下文、六小节顺序与 BRIEF 块，
+      通过后写缓存（model=KimiWork）并渲染；校验失败退出，不写缓存、不生成报告。
+    - 缓存未命中（第一阶段）：构建原 Prompt 写入 .runtime/llm/<id>/request.md，
+      打印 LLM_REQUEST_REQUIRED=<path> 后退出（on_miss='exit'）或返回 None（on_miss='skip'）。
 
-def _generate_llm_report(df: pd.DataFrame, analysis_data: dict, analysis_dir: Path,
-                         activity_id, user_note: str = None, force: bool = False) -> tuple:
-    """生成 LLM 教练点评（带同日缓存），并把简报回填到 analysis_data['brief_summary']
-
-    Returns:
-        (llm_report, actual_model)
+    任何情况下都不调用外部模型、不用空点评生成正式报告。
     """
     from src.deep_analyzer import LLMReportGenerator
 
-    cache_path = _llm_cache_path(analysis_dir, activity_id)
-    if not force:
+    cache_path = _llm_cache_path(activity_id)
+
+    if response_path is not None:
+        # ---------------- 第二阶段：渲染 KimiWork 已生成的回复 ----------------
+        resp_file = Path(response_path).expanduser()
+        if not resp_file.exists():
+            logger.error(f"response 文件不存在: {resp_file}")
+            sys.exit(1)
+        content = resp_file.read_text(encoding='utf-8')
+        # 请求上下文一致性校验（防止响应错配）
+        context_file = resp_file.parent / "context.json"
+        if context_file.exists():
+            try:
+                ctx = json.loads(context_file.read_text(encoding='utf-8'))
+            except json.JSONDecodeError as e:
+                logger.error(f"请求上下文解析失败: {e}")
+                sys.exit(1)
+            cur_ctx = {
+                'activity_id': activity_id,
+                'user_note_hash': _user_note_hash(user_note),
+                'prompt_version': LLM_PROMPT_VERSION,
+            }
+            for key, cur_val in cur_ctx.items():
+                if str(ctx.get(key)) != str(cur_val):
+                    logger.error(
+                        f"response 上下文不一致: {key} 期望 {cur_val!r}，实际 {ctx.get(key)!r}。"
+                        "请确认 response.md 对应当前活动、体感和 Prompt 版本。"
+                    )
+                    sys.exit(1)
+        problems = _validate_llm_response(content)
+        if problems:
+            for p in problems:
+                logger.error(f"response 校验失败: {p}")
+            logger.error("请修正 response.md 后重试；未写缓存、未生成正式报告。")
+            sys.exit(1)
+        _write_llm_cache(cache_path, user_note, 'KimiWork', content)
+        llm_report, brief = LLMReportGenerator._parse_brief(content)
+        analysis_data['brief_summary'] = brief
+        logger.info("✅ response 校验通过，已写入 LLM 缓存（model=KimiWork）")
+        return llm_report, 'KimiWork'
+
+    if not force and cache_path is not None:
         cached = _read_llm_cache(cache_path, user_note)
         if cached is not None:
             content, model = cached
-            logger.info("复用 LLM 缓存，跳过 API 调用")
+            print("LLM_CACHE_HIT")
             llm_report, brief = LLMReportGenerator._parse_brief(content)
             analysis_data['brief_summary'] = brief
             return llm_report, model
 
+    # ---------------- 第一阶段：准备模型请求 ----------------
     llm_gen = LLMReportGenerator(df_all=df)
-    llm_report, actual_model, brief = llm_gen.generate(analysis_data, user_note=user_note)
-    analysis_data['brief_summary'] = brief
-
-    # LLM 调用失败（降级文案）时不写缓存
-    if cache_path is not None and not _llm_report_degraded(llm_report):
-        # 缓存正文保留 BRIEF 分隔块，保证缓存命中时简报不丢失
-        cached_content = llm_report
-        if brief:
-            cached_content = f"{llm_report}\n\n<<<BRIEF>>>{brief}<<<END>>>"
-        _write_llm_cache(cache_path, user_note, actual_model, cached_content)
-
-    return llm_report, actual_model
+    prompt = llm_gen._build_prompt(analysis_data, user_note=user_note)
+    request_path = _write_llm_request(activity_id, prompt, user_note)
+    print(f"LLM_REQUEST_REQUIRED={request_path}")
+    if on_miss == 'skip':
+        logger.warning("批量模式：已跳过本次深析报告渲染，等待 response 后单独渲染")
+        return None, None
+    logger.info("等待 KimiWork 会话生成 response.md 后，使用 --llm-response 重新运行第二阶段")
+    sys.exit(0)
 
 
 def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           analysis_dir: Path, output_dir: Path,
                           max_hr: int, resting_hr: int,
                           fetcher=None, user_note: str = None,
-                          force: bool = False) -> str:
+                          force: bool = False, response_path: str = None,
+                          on_miss: str = 'exit') -> str:
     """对单次跑步生成深度分析报告"""
 
     from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
@@ -465,9 +559,12 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
         fetcher_obj if activity_id and fetcher else fetcher
     )
 
-    llm_report, actual_model = _generate_llm_report(
-        df, analysis_data, analysis_dir, activity_id,
-        user_note=user_note, force=force)
+    llm_report, actual_model = _resolve_llm_report(
+        df, analysis_data, activity_id,
+        user_note=user_note, force=force,
+        response_path=response_path, on_miss=on_miss)
+    if llm_report is None:
+        return None  # 批量模式等待 response，不渲染正式报告
 
     report_gen = AnalysisReportGenerator(str(analysis_dir))
     html_path = report_gen.generate(analysis_data, llm_report,
@@ -478,22 +575,7 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                                     pa_hr_history=pa_hr_history_chart,
                                     model_name=actual_model)
 
-    date_str = target_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-    activity_id = target_run.get('activity_id')
-    # 复制到 iCloud（先删旧文件再复制），文件名同步 activity_id 后缀
-    icloud_filename = (
-        f"深度分析报告_{date_str}_{activity_id}.html"
-        if activity_id and str(activity_id) not in ('', 'unknown', 'None')
-        else f"深度分析报告_{date_str}.html"
-    )
-    icloud_path = copy_to_icloud(
-        html_path,
-        Path(DEFAULT_CONFIG['icloud_deep_analysis_dir']),
-        icloud_filename,
-    )
-
     logger.info(f"✅ 深度分析报告已生成: {html_path}")
-    logger.info(f"   iCloud: {icloud_path}")
     return html_path
 
 
@@ -539,7 +621,8 @@ def _print_summary(stats: dict):
 def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
                  max_hr: int, resting_hr: int, user_note: str = None,
-                 fetcher=None, force: bool = False) -> None:
+                 fetcher=None, force: bool = False,
+                 response_path: str = None) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
@@ -551,6 +634,9 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     if dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
         return
+
+    # 确保报告本地静态资源（Plotly/jQuery/DataTables）就位
+    ensure_report_assets(output_dir)
 
     # ----------------------------------------------------------
     # --deep-analyze / --deep-analyze-all 模式
@@ -599,7 +685,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
             _generate_deep_report(df, target_run, analysis_dir, output_dir,
                                   max_hr=max_hr, resting_hr=resting_hr,
                                   fetcher=deep_fetcher,
-                                  user_note=user_note, force=force)
+                                  user_note=user_note, force=force,
+                                  response_path=response_path)
             if not fetcher:
                 deep_fetcher.close()
         else:
@@ -629,7 +716,8 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                 logger.info(f"📝 分析: {row.get('title', '')} ({row.get('date', '')})")
                 _generate_deep_report(df, row, analysis_dir, output_dir,
                                       max_hr=max_hr, resting_hr=resting_hr,
-                                      fetcher=shared_fetcher)
+                                      fetcher=shared_fetcher,
+                                      on_miss='skip')
                 count += 1
 
             # 批量深析完成后关闭复用的 fetcher
@@ -703,9 +791,9 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
         if activity_id:
             temp_fetcher.close()
 
-        llm_report, actual_model = _generate_llm_report(
-            df, analysis_data, analysis_dir, activity_id,
-            user_note=user_note)
+        llm_report, actual_model = _resolve_llm_report(
+            df, analysis_data, activity_id,
+            user_note=user_note, response_path=response_path)
 
         report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
         html_path = report_gen_deep.generate(analysis_data, llm_report,
@@ -716,21 +804,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                                              pa_hr_history=pa_hr_history_chart,
                                              model_name=actual_model)
 
-        date_str = latest_run.get('date', pd.Timestamp.now()).strftime('%Y%m%d')
-        activity_id = latest_run.get('activity_id')
-        icloud_filename = (
-            f"深度分析报告_{date_str}_{activity_id}.html"
-            if activity_id and str(activity_id) not in ('', 'unknown', 'None')
-            else f"深度分析报告_{date_str}.html"
-        )
-        icloud_path = copy_to_icloud(
-            html_path,
-            Path(DEFAULT_CONFIG['icloud_deep_analysis_dir']),
-            icloud_filename,
-        )
-
         logger.info(f"✅ 深度分析报告已生成: {html_path}")
-        logger.info(f"   iCloud: {icloud_path}")
 
     # ----------------------------------------------------------
     # Step 8: 生成可视化图表
@@ -760,17 +834,6 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     logger.info(f"✅ 主报告已生成: {main_report_path}")
     logger.info("=" * 60)
 
-    # ----------------------------------------------------------
-    # Step 10: 复制 HTML 综合报告到 iCloud
-    # ----------------------------------------------------------
-    logger.info("Step 10/10: 复制综合报告到 iCloud...")
-    icloud_report = copy_to_icloud(
-        Path(main_report_path),
-        Path(DEFAULT_CONFIG['icloud_deep_analysis_dir']),
-        "PowerFun.html",
-    )
-    logger.info(f"✅ iCloud 报告: {icloud_report}")
-
     _print_summary(stats)
 
 
@@ -787,33 +850,22 @@ def main():
         logger.info("已删除认证 token")
         return
 
-    if args.pdf_only:
-        logger.info("=" * 60)
-        logger.info("📄 PDF 生成模式（从已有 HTML 转换）")
-        logger.info("=" * 60)
-        from src.pdf_generator import generate_pdf_reports
-        try:
-            results = generate_pdf_reports()
-            logger.info("=" * 60)
-            if results['comprehensive']:
-                logger.info(f"✅ 综合分析 PDF: {results['comprehensive']}")
-            if results['deep']:
-                logger.info(f"✅ 深度分析 PDF: {results['deep']}")
-            logger.info("=" * 60)
-        except Exception as e:
-            logger.error(f"PDF 生成失败: {e}")
-            sys.exit(1)
-        return
+    if args.garmin_check:
+        from src.personal_api import garmin_check
+        ok = garmin_check()
+        sys.exit(0 if ok else 1)
 
     _main_inner(args)
 
 
 def _main_inner(args):
     """主流程内部逻辑"""
+    data_dir = Path(DEFAULT_CONFIG["data_dir"]).expanduser()
+    data_dir.mkdir(parents=True, exist_ok=True)
     output_dir = Path(args.output or DEFAULT_CONFIG["report_dir"]).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    parquet_path = output_dir / "running_data.parquet"
+    parquet_path = data_dir / "running_data.parquet"
 
     logger.info("=" * 60)
     logger.info("🏃 PowerFun 跑步数据分析")
@@ -834,8 +886,17 @@ def _main_inner(args):
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
                      args.max_hr, args.resting_hr, user_note=args.user_note,
-                     fetcher=fetcher, force=args.force)
+                     fetcher=fetcher, force=args.force,
+                     response_path=args.llm_response)
         return
+
+    # ==========================================================
+    # 路径 A2: --fetch-new（Garmin 增量拉取；--stage 写隔离目录）
+    # ==========================================================
+    if args.fetch_new:
+        from src.personal_api import fetch_new
+        ok = fetch_new(stage_dir=args.stage)
+        sys.exit(0 if ok else 1)
 
     # ==========================================================
     # 路径 B: --test-data（从本地 JSON 加载）
@@ -948,7 +1009,7 @@ def _main_inner(args):
         logger.info(f"JSON 数据已保存: {json_path}")
 
     # 可选: 输出 CSV（12 列，供外部查看）
-    csv_path = output_dir / "running_data_cleaned.csv"
+    csv_path = data_dir / "running_data_cleaned.csv"
     _export_csv(df, csv_path)
 
     # ----------------------------------------------------------
@@ -1006,7 +1067,8 @@ def _main_inner(args):
         _run_reports(df, output_dir, stats, args.dry_run,
                      args.deep_analyze, args.deep_analyze_all,
                      args.max_hr, args.resting_hr, user_note=args.user_note,
-                     fetcher=fetcher, force=args.force)
+                     fetcher=fetcher, force=args.force,
+                     response_path=args.llm_response)
     finally:
         if fetcher is not None:
             fetcher.close()

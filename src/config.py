@@ -144,15 +144,15 @@ HR_ZONE_PERCENTAGES = {
 # 默认配置
 # ============================================================
 DEFAULT_CONFIG = {
-    'data_dir': str(PROJECT_ROOT / '.data'),
-    'state_file': str(PROJECT_ROOT / '.data' / 'last_fetch.json'),
-    'report_dir': str(Path.home() / 'Documents' / 'Run'),
-    'cache_dir': str(PROJECT_ROOT / '.data'),
+    'data_dir': str(PROJECT_ROOT / 'data'),
+    'state_file': str(PROJECT_ROOT / 'data' / 'last_fetch.json'),
+    'report_dir': str(PROJECT_ROOT / 'reports'),
+    'cache_dir': str(PROJECT_ROOT / 'cache'),
+    'llm_runtime_dir': str(PROJECT_ROOT / '.runtime' / 'llm'),
     'max_retries': 3,
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时
     'page_size': 100,             # Garmin API 分页大小
     'default_date_range_days': 30,
-    'icloud_deep_analysis_dir': str(Path.home() / 'Library' / 'Mobile Documents' / 'com~apple~CloudDocs' / 'RUN'),
     # 心率参数
     'max_hr': USER_CONFIG.get('max_hr'),             # 默认最大心率（老板实测）
     'resting_hr': USER_CONFIG.get('resting_hr'),          # 默认静息心率
@@ -192,43 +192,13 @@ INSIGHTS_CONFIG = {
 }
 
 # ============================================================
-# 🤖 LLM 配置（深度分析报告 AI 教练点评）
+# 🤖 LLM 配置（KimiWork 迁移：模型由 KimiWork 会话生成，无外部 API）
 # ============================================================
 
-import os as _os
-
-# 🔧 自动加载 ~/.openclaw/.env 环境变量（如 POWERFUN_LLM_API_KEY）
-from dotenv import load_dotenv as _load_dotenv
-_load_dotenv(_os.path.expanduser('~/.openclaw/.env'))
-
-# 旧配置（智谱 GLM）备份，如需切回取消注释即可：
-# LLM_CONFIG = {
-#     'model': 'GLM-4.7-Flash',
-#     'host': 'open.bigmodel.cn',
-#     'port': None,
-#     'path': '/api/paas/v4/chat/completions',
-#     'use_http': False,
-#     'max_tokens': 8192,
-#     'temperature': 0.7,
-#     'api_key': _os.environ.get('ZHIPU_API_KEY', ''),
-#     'display_name': 'GLM-4.7-Flash',
-# }
-
+# 报告 footer 展示的教练点评来源名称；实际生成由 KimiWork 两阶段编排完成：
+#   prepare（写 request.md）→ KimiWork 当前模型生成 response.md → render
 LLM_CONFIG = {
-    # 模型名称（Kimi Code，OpenAI 兼容端点）
-    'model': 'kimi-for-coding',
-    # API 服务地址（Kimi Coding）
-    'host': 'api.kimi.com',
-    'port': None,               # 本地模型需要端口，云端可设为 None
-    'path': '/coding/v1/chat/completions',
-    # 本地模型用 HTTP，云端自动切换 HTTPS
-    'use_http': False,          # True=HTTP, False=HTTPS
-    # 生成参数（kimi-for-coding 仅允许 temperature=1）
-    'max_tokens': 8192,
-    'temperature': 1,
-    # API Key：从环境变量读取（KIMI_API_KEY）
-    'api_key': _os.environ.get('KIMI_API_KEY', ''),
-    'display_name': 'Kimi Code',  # 与 model 字段保持一致，footer 显示实际模型
+    'display_name': 'KimiWork',
 }
 
 # 心率区间颜色（供各模块统一使用）

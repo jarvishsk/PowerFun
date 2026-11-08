@@ -1,133 +1,52 @@
-# 🏃 PowerFun - 跑步数据分析
+# 🏃 PowerFun - 跑步数据分析（KimiWork 版）
 
-> 整合 Garmin Connect (China) 数据获取 + 跑步数据分析 + 可视化报告生成
+> Garmin 跑步数据获取 + 确定性分析内核 + KimiWork 教练点评 + 本地 HTML 报告
+
+本项目已从 OpenClaw 平台迁移至 KimiWork：保留经过验证的确定性分析内核，
+模型编排改为 KimiWork 两阶段流程（prepare → 当前模型 → response → render），
+报告资源全部本地化，取消 PDF 与 iCloud 同步。
 
 ## 功能特性
 
-- **🔐 自动登录**: Garmin Connect China 区域 SSO 登录，首次输入账号密码后自动保存 token
-- **📊 智能拉取**: 首次全部拉取，后续增量更新，自动去重和限流处理
-- **🧹 数据清洗**: 完整的字段映射、类型转换、异常检测
-- **❤️ 心率区间**: 基于 Karvonen HRR（心率储备法），支持 Z1-Z5 五区间分析，使用 Garmin 官方 `hrTimeInZone_1~5` 原生数据
-- **⏱️ 配速趋势**: 移动平均、趋势判断（提升/持平/下降）
-- **📈 可视化**: 9 个 Plotly 交互式图表（配速-心率趋势、心率分布、功率分布、训练效果等）
-- **📄 综合分析报告**: HTML + PDF 格式，包含详细数据表、可视化图表、月度统计，移动端友好
-- **🔍 深度分析报告**: 单次跑步深度分析（HTML + PDF + iCloud 同步），包含能力对比、分圈表现、AI 教练建议
-
-## 数据流
-
-### 正常模式 / --load-parquet
-
-```
-数据管线:  API → 清洗 → 过滤 → 心率分类 → 跑分类 → 保存 parquet
-                                                        ↓
-报告管线:  Step 7: 深析报告（最近一次跑步，HTML + PDF）
-          Step 8: 9 个 Plotly 交互式图表
-          Step 9: HTML 综合报告（含深析链接）
-          Step 10: PDF 综合报告
-```
-
-### --deep-analyze 模式
-
-```
-数据管线:  读取 parquet
-          Step 7: 指定跑步的深析报告（HTML + PDF）
-          Step 8: 9 个 Plotly 交互式图表
-          Step 9: HTML 综合报告（含深析链接）
-         Step 10: 跳过综合报告 PDF
-```
+- **📊 智能拉取**: Garmin Connect 中国区 Personal API 增量更新，按 activity_id 去重、标题保护
+- **🧹 数据清洗**: 完整的字段映射、类型转换、异常检测（Python 内核，不让模型算数）
+- **❤️ 心率区间**: Karvonen HRR（心率储备法）Z1-Z5 五区间，使用 Garmin 原生 `hrTimeInZone_1~5`
+- **⏱️ 跑分分类**: 轻松跑/节奏跑/LSD/赛事等自动分类与历史对比（同温区基线、180 天全量回归）
+- **📈 可视化**: 10 个 Plotly 交互式图表，报告资源本地引用（无 CDN 依赖）
+- **🔍 深度分析**: 单次跑步深析（分圈 P20-P80、Pa:Hr 有氧解耦、确定性问题清单）
+- **🤖 教练点评**: 由 KimiWork 当前模型基于已计算的 analysis_data 生成，缓存复用（prompt_version 失效机制）
 
 ## 快速开始
 
-### 安装
-
 ```bash
-cd PowerFun
-pip install -r requirements.txt
+# 安装（Python 3.14）
+/opt/homebrew/bin/python3.14 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# 增量更新跑步数据（中国区 Personal API，需 .secrets/garmin-personal-api-key）
+.venv/bin/python main.py --fetch-new --stage .runtime/garmin-validation   # 隔离验证
+.venv/bin/python main.py --fetch-new                                       # 正式写入（自动备份）
+
+# 生成报告（综合 + 最新深析）
+.venv/bin/python main.py --load-parquet
+
+# 单次深析（两阶段：先 prepare，模型生成 response 后 render）
+.venv/bin/python main.py --load-parquet --deep-analyze latest --user-note "<体感>" --prepare-llm
+.venv/bin/python main.py --load-parquet --deep-analyze latest --user-note "<体感>" \
+  --llm-response .runtime/llm/<activity_id>/response.md
 ```
 
-### 首次运行
+详细触发语义见 [SKILL.md](SKILL.md)。回归测试：`.venv/bin/python -m pytest tests/`。
 
-```bash
-python main.py --email your_email@example.com --password your_password
+## 目录结构
+
+```text
+main.py / src/            # 分析内核与薄适配
+tests/                    # 数据完整性 + 确定性场景 + 报告测试
+data/                     # 主表 parquet、原始活动缓存、分圈、拉取状态（Git 排除）
+reports/                  # 综合报告 + 深析报告 + 本地静态资源 assets/（Git 排除）
+cache/llm/                # 教练点评缓存（Git 排除）
+docs/                     # 经验、跑者画像、训练计划、外部 PRD
+.secrets/                 # Garmin Personal API Key / bearer token（Git 排除）
+.runtime/                 # 临时请求、隔离验证、备份（Git 排除）
 ```
-
-登录后 token 自动保存，后续运行无需输入密码。
-
-### 日常使用
-
-```bash
-# 从 Garmin API 拉取最新数据并生成完整报告（深析 + 综合）
-python main.py
-
-# 跳过 API 拉取，直接从已有数据生成报告
-python main.py --load-parquet
-
-# 查看指定跑步的深度分析报告（同时更新综合报告链接）
-python main.py --deep-analyze "2026-05-05"
-
-# 对所有跑步批量生成深析报告
-python main.py --deep-analyze-all
-
-# 指定心率参数（可选，默认从配置文件读取）
-python main.py --max-hr 180 --resting-hr 60
-```
-
-## 配置心率参数
-
-打开 `src/config.py`，找到文件顶部的 `USER_CONFIG`：
-
-```python
-USER_CONFIG = {
-    'max_hr': 188,        # 最大心率（实测值）
-    'resting_hr': 60,     # 静息心率（实测值）
-}
-```
-
-按你的实测值修改这两个参数即可，所有模块自动同步，无需在其他地方修改。
-
-> 心率区间使用 **Karvonen HRR（心率储备法）** 计算，区间百分比为固定值，无需也不建议修改。
-
-## 输出文件
-
-| 文件 | 路径 |
-|------|------|
-| 综合分析报告 (HTML) | `~/Documents/Run/PowerFun.html` |
-| 综合分析报告 (PDF) | `~/Documents/Run/综合分析报告.pdf` |
-| 深度分析报告 (HTML) | `~/Documents/Run/PowerFun_Reports/run_analysis_YYYYMMDD.html` |
-| 深度分析报告 (PDF) | `~/Documents/Run/PowerFun_Reports/深度分析报告_YYYYMMDD.pdf` |
-| 清洗后数据 (CSV) | `~/Documents/Run/running_data_cleaned.csv` |
-
-PDF 报告会自动同步到 iCloud。
-
-## 项目结构
-
-```
-PowerFun/
-├── main.py                 # 主程序入口
-├── requirements.txt        # Python 依赖
-├── README.md              # 项目文档
-├── SKILL.md               # OpenClaw 技能说明
-├── VERSION                # 版本文件
-├── .gitignore
-├── .data/                 # 运行时数据（token、缓存，已忽略）
-└── src/
-    ├── config.py           # 用户配置 + 字段映射 + 系统参数
-    ├── data_fetcher.py     # Garmin Connect API 数据获取
-    ├── data_processor.py   # 数据清洗 + 字段映射 + 校验
-    ├── classifier.py       # 心率区间 + 跑步类型分类
-    ├── chart_generator.py   # Plotly 交互式图表
-    ├── report_generator.py # HTML 报告生成
-    ├── pdf_generator.py    # PDF 报告生成
-    ├── deep_analyzer.py    # 深度分析器 + LLM 报告生成
-    └── analysis_report.py  # 深度分析 HTML 报告生成
-```
-
-## 注意事项
-
-- Garmin 账号密码通过命令行参数传入，不会持久化存储
-- 限流时自动等待 1 小时后重试（指数退避）
-- 配速数据为关键数据，缺失时会报错退出
-
-## License
-
-MIT

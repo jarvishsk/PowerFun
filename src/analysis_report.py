@@ -159,7 +159,7 @@ ANALYSIS_HTML_TEMPLATE = """
         .status-value { font-size: 14px; font-weight: 500; color: #333; }
         @media print { body { background: white; } .section { box-shadow: none; border: 1px solid #eee; } }
     </style>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="../assets/plotly-2.27.0.min.js"></script>
 </head>
 <body>
 <div class="container">

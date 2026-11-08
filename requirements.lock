@@ -1,0 +1,12 @@
+garth==0.8.0
+httpx==0.28.1
+Jinja2==3.1.6
+numpy==2.5.4
+pandas==3.1.1
+plotly==7.1.0
+pyarrow==26.0.1
+pydantic==2.14.3
+pytest==9.2.0
+python-dateutil==4.0.0
+requests==2.34.2
+garmin-connect-personal-api-python==1.0.0

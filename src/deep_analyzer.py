@@ -1,6 +1,5 @@
 """跑步深度分析器"""
 
-import http.client
 import json
 import logging
 import math
@@ -1611,40 +1610,15 @@ class DeepRunAnalyzer:
 
 
 class LLMReportGenerator:
-    """LLM 文字报告生成器（配置从 config.py 读取）"""
-    
+    """LLM 教练点评 Prompt 构建器（KimiWork 迁移版）。
+
+    本类不再调用任何外部模型 API：仅负责构建确定性 Prompt（_build_prompt）、
+    解析 <<<BRIEF>>> 简报块（_parse_brief）。实际文字由 KimiWork 会话生成，
+    经 main.py 两阶段编排（--prepare-llm → --llm-response）写入缓存并渲染。
+    """
+
     def __init__(self, df_all: pd.DataFrame = None):
-        from src.config import LLM_CONFIG
-        self.config = LLM_CONFIG
-        self.api_key = self.config.get('api_key', '')
         self.df_all = df_all
-    
-    def generate(self, analysis_data: dict, user_note: str = None) -> tuple:
-        """基于结构化分析数据生成 LLM 文字报告
-
-        Args:
-            analysis_data: DeepRunAnalyzer.analyze() 返回的结果
-            user_note: 跑者体感备注（可选），将与客观数据一起提交给 AI 综合分析
-
-        Returns:
-            (report_text, actual_model, brief_summary) 元组，actual_model 为 LLM 实际返回的模型名，
-            brief_summary 为解析出的 100 字简报（解析失败时为空字符串）
-        """
-        display_name = self.config.get('display_name', 'AI模型')
-        if not self.api_key:
-            return "（API Key 未配置，跳过 AI 分析）", display_name, ""
-
-        prompt = self._build_prompt(analysis_data, user_note=user_note)
-        logger.info(f"prompt 字符数: {len(prompt)}")
-
-        try:
-            content, actual_model = self._call_api(prompt)
-            # 解析 <<<BRIEF>>> 分隔块：正文去掉该块，简报单独返回
-            content, brief = self._parse_brief(content)
-            return content, actual_model, brief
-        except Exception as e:
-            logger.error(f"LLM API 调用失败: {e}")
-            return f"（AI 分析调用失败: {e}）", display_name, ""
 
     @staticmethod
     def _parse_brief(content: str) -> tuple:
@@ -1917,76 +1891,6 @@ class LLMReportGenerator:
         lines.append('请解读分圈表现：配速是否均匀？心率是否漂移（后半程明显升高）？哪几圈相对历史中位数表现更好/更差？与历史P20-P80区间对比如何？')
         
         return '\n'.join(lines) + '\n'
-    
-    def _call_api(self, prompt: str) -> tuple:
-        """调用 LLM API（使用 config.py 中的配置）
-        
-        Returns:
-            (content, actual_model) 元组
-        """
-        return self._call_llm(
-            prompt,
-            api_key=self.api_key,
-            model=self.config.get('model'),
-            host=self.config.get('host'),
-            port=self.config.get('port'),
-            use_http=self.config.get('use_http', False),
-            path=self.config.get('path'),
-            max_tokens=self.config.get('max_tokens', 2000),
-            temperature=self.config.get('temperature', 0.7)
-        )
-    
-    @staticmethod
-    def _call_llm(prompt: str, api_key: str = None, model: str = '',
-                  host: str = '', port: int = None,
-                  use_http: bool = False, path: str = '',
-                  max_tokens: int = 2000, temperature: float = 0.7) -> str:
-        """通用 LLM 调用方法（供 brief_summary 和 _call_api 复用）"""
-        import time
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}',
-        }
-        body_dict = {
-            'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'max_tokens': max_tokens,
-            'temperature': temperature,
-        }
-        # GLM 系列模型默认启用推理（reasoning），会吃掉大量 token
-        # 需要显式关闭，否则 content 可能为空
-        if 'glm' in model.lower():
-            body_dict['thinking'] = {'type': 'disabled'}
-        body = json.dumps(body_dict).encode('utf-8')
-        
-        # 根据 use_http 参数选择 HTTP/HTTPS
-        conn_factory = http.client.HTTPConnection if use_http else http.client.HTTPSConnection
-        
-        max_retries = 6
-        for attempt in range(max_retries):
-            if port:
-                conn = conn_factory(f'{host}:{port}', timeout=240)
-            else:
-                conn = conn_factory(host, timeout=240)
-            try:
-                conn.request('POST', path, body=body, headers=headers)
-                resp = conn.getresponse()
-                data = json.loads(resp.read().decode('utf-8'))
-                
-                if resp.status == 200:
-                    actual_model = data.get('model', model)
-                    return data['choices'][0]['message']['content'], actual_model
-                else:
-                    raise Exception(f"API 错误: {data.get('error', data)}")
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    sleep_time = min(5 * (2 ** attempt), 60)  # 递增退避: 5,10,20,40,60
-                    logger.warning(f"LLM 调用失败，第 {attempt+1}/{max_retries} 次重试 ({sleep_time}s 后): {e}")
-                    time.sleep(sleep_time)
-                else:
-                    raise
-            finally:
-                conn.close()
     
     def _build_temp_impact_reference(self, raw_data: dict, pa_hr: dict) -> str:
         """构建气温影响参考上下文，供LLM分析时参考"""
