@@ -30,12 +30,14 @@ BEARER_TOKEN_CACHE_FILE = SECRETS_DIR / "garmin-personal-bearer-token.json"
 CHINA_BASE_URL = "https://personal.connectapi.garmin.cn"
 
 # 活动列表关键字段（B 组字段对照用）：心率区间、功率、步频、VR、GCT、温度、训练效果和负荷
+# 注意：Personal API 字段名为 averageRunningCadenceInStepsPerMinute / avgVerticalRatio / avgGroundContactTime
+# （旧 garth 口径 averageRunCadence / verticalRatio / groundContactTime 不存在）；vO2MaxValue 亦不在返回中
 KEY_LIST_FIELDS = [
     "hrTimeInZone_1", "hrTimeInZone_2", "hrTimeInZone_3", "hrTimeInZone_4", "hrTimeInZone_5",
     "powerTimeInZone_1", "powerTimeInZone_2", "powerTimeInZone_3", "powerTimeInZone_4", "powerTimeInZone_5",
     "avgPower", "maxPower", "normPower",
-    "avgRunCadence", "maxRunCadence",
-    "verticalRatio", "groundContactTime",
+    "averageRunningCadenceInStepsPerMinute", "maxRunningCadenceInStepsPerMinute",
+    "avgVerticalRatio", "avgGroundContactTime",
     "minTemperature", "maxTemperature",
     "aerobicTrainingEffect", "anaerobicTrainingEffect",
     "activityTrainingLoad",
