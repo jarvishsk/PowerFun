@@ -127,13 +127,16 @@ def garmin_check() -> bool:
             return False
         logger.info(f"✅ 单次活动详情读取成功: id={detail_id}")
 
-        # 分圈端点验证（只读，不写数据）
+        # 分圈验证：laps 端点已下线（404），改用原始 FIT 解析（只读，不写数据）
         try:
-            laps = client.get(f"/activity-service/activity/{act_id}/laps")
-            lap_count = len(laps.get("lapDTOs", [])) if isinstance(laps, dict) else 0
-            logger.info(f"✅ 分圈端点可用: /activity-service/activity/{act_id}/laps，lapDTOs={lap_count}")
+            laps = _fetch_laps_from_fit(client, act_id)
+            logger.info(f"✅ FIT 分圈解析成功: id={act_id}，{len(laps)} 圈")
+            # 基准活动回归锚点：此前已验证应为 16 圈
+            if str(act_id) == "659451010" and len(laps) != 16:
+                logger.error(f"基准活动分圈数异常: {len(laps)} != 16")
+                return False
         except Exception as e:
-            logger.error(f"分圈端点不可用: {e}")
+            logger.error(f"FIT 分圈解析失败: {e}")
             return False
         return True
     except Exception as e:
@@ -183,34 +186,61 @@ def _title_guard_keep_cached(cached_rec: dict, fetched_rec: dict) -> bool:
     return True
 
 
-def _normalize_laps(activity_id, laps_resp: dict) -> list[dict]:
-    """将 laps 端点响应标准化为与原实现一致的字段口径"""
+def _parse_fit_laps(zip_bytes: bytes, activity_id) -> list[dict]:
+    """从 download_activity 返回的 ZIP 中解析 FIT 分圈。
+
+    Personal API 的 /activity-service/activity/{id}/laps 端点已下线（404），
+    原始 FIT 是官方替代来源。映射口径与既有缓存逐圈比对一致（基准活动
+    659451010，16 圈，全部字段最大差为 0）：
+
+    - duration_sec  = total_timer_time（不含停表；total_elapsed_time 含暂停，不采用）
+    - cadence       = (avg_running_cadence + avg_fractional_cadence) × 2
+                      （Connect 浮点步频口径：整数步/单脚 + 小数部分，翻倍为总步频）
+    - 其余字段同名直取；FIT lap 消息无 lapIndex，圈号按消息顺序从 1 编号
+    """
+    import io
+    import zipfile
+
     import numpy as np
-    if not isinstance(laps_resp, dict):
-        return []
-    lap_dtos = laps_resp.get("lapDTOs", [])
+    from fitparse import FitFile
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        fit_names = [n for n in zf.namelist() if n.lower().endswith(".fit")]
+        if not fit_names:
+            raise ValueError("活动 ZIP 内无 FIT 文件")
+        fit_bytes = zf.read(fit_names[0])
+
+    def _num(v):
+        return float(v) if v is not None else np.nan
+
     laps = []
-    for lap in lap_dtos:
-        distance = lap.get("distance", 0)
-        duration = lap.get("duration", 0)
-        pace = duration / (distance / 1000.0) if distance > 0 else 0
-
-        def _val_or_nan(val):
-            return val if val is not None else np.nan
-
+    fit = FitFile(io.BytesIO(fit_bytes))
+    for idx, rec in enumerate(fit.get_messages("lap"), start=1):
+        d = {fd.name: fd.value for fd in rec}
+        distance = float(d.get("total_distance") or 0.0)
+        duration = float(d.get("total_timer_time") or 0.0)
+        pace = duration / (distance / 1000.0) if distance > 0 else 0.0
+        cadence_raw = d.get("avg_running_cadence")
+        frac = d.get("avg_fractional_cadence") or 0.0
         laps.append({
             "activity_id": activity_id,
-            "lap_index": lap.get("lapIndex", 0),
+            "lap_index": idx,
             "distance_m": distance,
             "duration_sec": duration,
             "pace_sec_per_km": round(pace, 2),
-            "avg_hr": _val_or_nan(lap.get("averageHR")),
-            "max_hr": _val_or_nan(lap.get("maxHR")),
-            "avg_power": _val_or_nan(lap.get("averagePower")),
-            "cadence": _val_or_nan(lap.get("averageRunCadence")),
-            "elevation_gain_m": lap.get("elevationGain", 0),
+            "avg_hr": _num(d.get("avg_heart_rate")),
+            "max_hr": _num(d.get("max_heart_rate")),
+            "avg_power": _num(d.get("avg_power")),
+            "cadence": (float(cadence_raw) + float(frac)) * 2 if cadence_raw is not None else np.nan,
+            "elevation_gain_m": _num(d.get("total_ascent")),
         })
     return laps
+
+
+def _fetch_laps_from_fit(client, activity_id) -> list[dict]:
+    """下载原始 FIT（ZIP）并解析分圈，字段口径与既有 lap_data 一致"""
+    zip_bytes = client.download_activity(activity_id)
+    return _parse_fit_laps(zip_bytes, activity_id)
 
 
 def _backup_data_files() -> Optional[Path]:
@@ -302,14 +332,13 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                 if a.get(f) is None:
                     missing_fields[f] = missing_fields.get(f, 0) + 1
 
-        # 5) 拉取新增活动的分圈
+        # 5) 拉取新增活动的分圈（laps 端点已下线，走原始 FIT 解析）
         new_laps: list[dict] = []
         lap_fail_ids: list[str] = []
         for a in truly_new:
             aid = _get_id(a)
             try:
-                laps_resp = client.get(f"/activity-service/activity/{aid}/laps")
-                laps = _normalize_laps(aid, laps_resp)
+                laps = _fetch_laps_from_fit(client, aid)
                 new_laps.extend(laps)
             except Exception as e:
                 logger.warning(f"分圈拉取失败 (id={aid}): {e}")

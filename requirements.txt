@@ -7,6 +7,8 @@ python-dateutil>=2.8
 # Garmin Connect Personal API（中国区，官方客户端）
 garmin-connect-personal-api-python>=1.0.0
 requests>=2.31
+# 分圈数据：laps 端点已下线，从原始 FIT 解析
+fitparse>=1.2.0
 # 代码级回退：原 garth SSO 抓取实现（Personal API 验收通过后删除）
 garth>=0.5.0
 httpx>=0.25

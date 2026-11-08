@@ -10,3 +10,4 @@ pytest==9.2.0
 python-dateutil==4.0.0
 requests==2.34.2
 garmin-connect-personal-api-python==1.0.0
+fitparse==1.2.0
