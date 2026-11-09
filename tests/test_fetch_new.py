@@ -70,8 +70,7 @@ def sandbox(tmp_path, monkeypatch):
 
     cache = json.loads((data_dir / 'activities_cache.json').read_text(encoding='utf-8'))
     box = SimpleNamespace(data_dir=data_dir, cache=cache, lap_calls=lap_calls,
-                          parquet_before=pd.read_parquet(data_dir / 'running_data.parquet'),
-                          csv_bytes_before=(data_dir / 'running_data_cleaned.csv').read_bytes())
+                          parquet_before=pd.read_parquet(data_dir / 'running_data.parquet'))
     yield box
 
 
@@ -180,12 +179,17 @@ def test_custom_title_protection_does_not_block_field_updates(sandbox, monkeypat
 def test_identical_record_is_noop(sandbox, monkeypatch):
     duplicate = copy.deepcopy(_latest_record(sandbox))
     parquet_bytes_before = (sandbox.data_dir / 'running_data.parquet').read_bytes()
+    csv_before = _read_csv(sandbox)
     _client_for([duplicate], monkeypatch)
 
     assert pa.fetch_new() is True
     assert sandbox.lap_calls == [], "完全重复记录不应触发分圈拉取"
     assert (sandbox.data_dir / 'running_data.parquet').read_bytes() == parquet_bytes_before
-    assert (sandbox.data_dir / 'running_data_cleaned.csv').read_bytes() == sandbox.csv_bytes_before
+    # 无待处理活动时：parquet 不变；幂等刷新使 CSV 与主表对齐（修复陈旧 CSV）
+    df_after = _read_parquet(sandbox)
+    csv_after = _read_csv(sandbox)
+    assert len(csv_after) == len(df_after)
+    _assert_parquet_csv_consistent(sandbox)
 
 
 # ------------------------------------------------------------------

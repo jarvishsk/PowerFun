@@ -472,6 +472,13 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                     processor.to_csv(merged_df, str(data_dir / "running_data_cleaned.csv"))
                 else:
                     logger.warning("主表为空，跳过写出")
+            elif (data_dir / "running_data.parquet").exists():
+                # 无待处理活动：仍从现有主表刷新一次 CSV，保证两者口径一致（幂等）
+                import pandas as pd
+                from src.data_processor import DataProcessor
+                current_df = pd.read_parquet(data_dir / "running_data.parquet")
+                if not current_df.empty:
+                    DataProcessor().to_csv(current_df, str(data_dir / "running_data_cleaned.csv"))
             if new_laps:
                 import pandas as pd
                 lap_path = data_dir / "lap_data.parquet"
