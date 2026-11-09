@@ -110,8 +110,11 @@ def garmin_check() -> bool:
 
     try:
         profile = client.get_user_profile_settings()
-        user = profile.get("userName") or profile.get("username") or profile.get("displayName") or "unknown"
-        logger.info(f"✅ 认证成功，用户资料读取成功: userName={user}")
+        if not isinstance(profile, dict) or not profile:
+            logger.error("用户资料响应为空")
+            return False
+        # 只报告成功/失败，不输出个人资料内容
+        logger.info("✅ 认证成功，用户资料读取成功")
 
         acts = client.search_activities(limit=1, activity_type="running")
         act_list = acts if isinstance(acts, list) else acts.get("activities", [])
