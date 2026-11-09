@@ -2,6 +2,7 @@
 
 定义字段映射表、心率区间、默认参数等。
 """
+import os
 from pathlib import Path
 
 # 项目根目录（基于 config.py 所在目录计算）
@@ -147,8 +148,10 @@ DEFAULT_CONFIG = {
     'data_dir': str(PROJECT_ROOT / 'data'),
     'state_file': str(PROJECT_ROOT / 'data' / 'last_fetch.json'),
     'report_dir': str(PROJECT_ROOT / 'reports'),
-    'cache_dir': str(PROJECT_ROOT / 'cache'),
-    'llm_runtime_dir': str(PROJECT_ROOT / '.runtime' / 'llm'),
+    # 测试/隔离运行可用环境变量覆盖（正式运行不设即为默认位置）
+    'cache_dir': os.environ.get('POWERFUN_CACHE_DIR', str(PROJECT_ROOT / 'cache')),
+    'llm_runtime_dir': os.environ.get(
+        'POWERFUN_LLM_RUNTIME_DIR', str(PROJECT_ROOT / '.runtime' / 'llm')),
     'max_retries': 3,
     'rate_limit_wait_sec': 3600,  # 限流时等待 1 小时
     'page_size': 100,             # Garmin API 分页大小

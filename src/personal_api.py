@@ -334,10 +334,42 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                 if a.get(f) is None:
                     missing_fields[f] = missing_fields.get(f, 0) + 1
 
-        # 5) 拉取新增活动的分圈（laps 端点已下线，走原始 FIT 解析）
+        # 5) 合并缓存（标题保护：只保留缓存的自定义标题，其余字段照常更新）
+        merged_map = { _get_id(a): a for a in cached if isinstance(a, dict) }
+        n_updated = 0
+        changed_ids: list = []
+        for a in all_new:
+            if not isinstance(a, dict):
+                continue
+            aid = _get_id(a)
+            if aid not in merged_map:
+                merged_map[aid] = a
+                continue
+            cached_rec = merged_map[aid]
+            if _title_guard_keep_cached(cached_rec, a):
+                # 标题保护：采用拉取记录，但保留缓存中的自定义标题（不阻断其他字段更新）
+                merged_rec = dict(a)
+                merged_rec['activityName'] = cached_rec.get('activityName')
+            else:
+                merged_rec = a
+            if merged_rec != cached_rec:
+                merged_map[aid] = merged_rec
+                changed_ids.append(aid)
+                n_updated += 1
+        merged = list(merged_map.values())
+        merged.sort(key=lambda x: (_parse_dt(x) or datetime.min), reverse=True)
+
+        # 6) 待处理集合：真正新增 + 内容发生变化的已有活动（未变化的不重复处理）
+        to_process = [merged_map[_get_id(a)] for a in truly_new]
+        to_process += [merged_map[aid] for aid in changed_ids]
+        to_process_ids = {_get_id(a) for a in to_process}
+        to_process_ids_str = {str(i) for i in to_process_ids}
+        logger.info(f"待处理活动: 新增 {len(truly_new)}，已有更新 {len(changed_ids)}，合计 {len(to_process)}")
+
+        # 7) 拉取待处理活动的分圈（laps 端点已下线，走原始 FIT 解析）
         new_laps: list[dict] = []
         lap_fail_ids: list[str] = []
-        for a in truly_new:
+        for a in to_process:
             aid = _get_id(a)
             try:
                 laps = _fetch_laps_from_fit(client, aid)
@@ -347,24 +379,7 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                 lap_fail_ids.append(str(aid))
             time.sleep(1)
 
-        # 6) 合并缓存（标题保护）
-        merged_map = { _get_id(a): a for a in cached if isinstance(a, dict) }
-        n_updated = 0
-        for a in all_new:
-            if not isinstance(a, dict):
-                continue
-            aid = _get_id(a)
-            if aid not in merged_map:
-                merged_map[aid] = a
-            elif _title_guard_keep_cached(merged_map[aid], a):
-                continue  # 标题保护：保留缓存自定义标题
-            else:
-                merged_map[aid] = a
-                n_updated += 1
-        merged = list(merged_map.values())
-        merged.sort(key=lambda x: (_parse_dt(x) or datetime.min), reverse=True)
-
-        # 7) 新状态
+        # 8) 新状态
         latest = None
         for a in merged:
             dt = _parse_dt(a)
@@ -376,20 +391,21 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
             "total_count": len(merged),
         }
 
-        # 8) 清洗 + 分类新增活动（复用现有数据层，口径不变）
+        # 9) 清洗 + 分类待处理活动（复用现有数据层，口径不变），并 upsert 主表
         processed_df = None
-        if truly_new:
+        processor = None
+        if to_process:
             from src.data_processor import DataProcessor
             from src.classifier import HeartRateClassifier, RunClassifier
             processor = DataProcessor()
-            pdf = processor.process(truly_new)
+            pdf = processor.process(to_process)
             if not pdf.empty:
                 dist_mask = pdf['distance'] <= DEFAULT_CONFIG['max_distance_km']
                 kw = '|'.join(DEFAULT_CONFIG.get('excluded_title_keywords', ['间歇跑']))
                 title_mask = ~pdf['title'].str.contains(kw, na=False, regex=True)
                 filtered_out = int((~(dist_mask & title_mask)).sum())
                 pdf = pdf[dist_mask & title_mask].copy()
-                logger.info(f"新增活动过滤后有效记录: {len(pdf)} 条（过滤 {filtered_out} 条）")
+                logger.info(f"待处理活动过滤后有效记录: {len(pdf)} 条（过滤 {filtered_out} 条）")
                 hr_classifier = HeartRateClassifier(
                     DEFAULT_CONFIG['max_hr'], DEFAULT_CONFIG['resting_hr'])
                 pdf = hr_classifier.classify_dataframe(pdf)
@@ -397,15 +413,16 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                 pdf = run_classifier.classify_dataframe(pdf)
                 processed_df = pdf
 
-        # 9) 写出
+        # 10) 写出
         stats = {
             "fetched": len(all_new),
             "new": len(truly_new),
             "updated": n_updated,
+            "reprocessed": len(to_process),
             "duplicate_vs_cache": n_dup_vs_cache,
             "duplicate_in_fetch": dup_in_fetch,
-            "filtered_out": int((len(truly_new) and processed_df is not None and
-                                 len(truly_new) - len(processed_df)) or 0),
+            "filtered_out": int((len(to_process) and processed_df is not None and
+                                 len(to_process) - len(processed_df)) or 0),
             "missing_fields": missing_fields,
             "lap_rows": len(new_laps),
             "lap_failed_ids": lap_fail_ids,
@@ -434,15 +451,27 @@ def fetch_new(stage_dir: Optional[str] = None) -> bool:
                 json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
             Path(DEFAULT_CONFIG["state_file"]).write_text(
                 json.dumps(new_state, ensure_ascii=False, indent=2), encoding="utf-8")
-            if processed_df is not None:
+            if processor is not None:
+                # 主表 upsert：先移除待处理活动的旧行，再并入重新清洗的结果
                 import pandas as pd
                 parquet_path = data_dir / "running_data.parquet"
                 existing = pd.read_parquet(parquet_path) if parquet_path.exists() else pd.DataFrame()
-                merged_df = pd.concat([existing, processed_df], ignore_index=True)
-                merged_df = merged_df.drop_duplicates(subset=["activity_id"], keep="last")
-                merged_df = merged_df.sort_values("date")
-                merged_df.to_parquet(parquet_path, index=False)
-                logger.info(f"✅ 主表已更新: {parquet_path} ({len(merged_df)} 行)")
+                if not existing.empty and 'activity_id' in existing.columns:
+                    existing = existing[
+                        ~existing['activity_id'].astype(str).isin(to_process_ids_str)]
+                if processed_df is not None and not processed_df.empty:
+                    merged_df = pd.concat([existing, processed_df], ignore_index=True)
+                else:
+                    merged_df = existing
+                if not merged_df.empty:
+                    merged_df = merged_df.drop_duplicates(subset=["activity_id"], keep="last")
+                    merged_df = merged_df.sort_values("date")
+                    merged_df.to_parquet(parquet_path, index=False)
+                    logger.info(f"✅ 主表已更新: {parquet_path} ({len(merged_df)} 行)")
+                    # CSV 必须从最终合并后的主表导出（12 列固定口径）
+                    processor.to_csv(merged_df, str(data_dir / "running_data_cleaned.csv"))
+                else:
+                    logger.warning("主表为空，跳过写出")
             if new_laps:
                 import pandas as pd
                 lap_path = data_dir / "lap_data.parquet"
