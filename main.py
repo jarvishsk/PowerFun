@@ -53,7 +53,6 @@
 """
 
 import argparse
-import getpass
 import json
 import logging
 import os
@@ -73,7 +72,7 @@ from src.utils import (
     format_pace_mmss,
     ensure_report_assets,
 )
-from src.data_fetcher import GarminDataFetcher, AuthenticationError
+from src.data_fetcher import GarminDataFetcher
 from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
 from src.chart_generator import ChartGenerator
@@ -116,17 +115,12 @@ def parse_args():
     python main.py --dry-run
         """,
     )
-    parser.add_argument("--email", help="Garmin Connect 账号")
-    parser.add_argument("--password", help="Garmin Connect 密码")
-    parser.add_argument("--days", type=int, default=30, help="拉取天数 (默认 30)")
     parser.add_argument("--max-hr", type=int, default=DEFAULT_CONFIG.get('max_hr'), help=f"最大心率 (默认 {DEFAULT_CONFIG.get('max_hr')})")
     parser.add_argument("--resting-hr", type=int, default=DEFAULT_CONFIG.get('resting_hr'), help=f"静息心率 (默认 {DEFAULT_CONFIG.get('resting_hr')})")
     parser.add_argument("--output", type=str, default=None, help="报告输出目录")
     parser.add_argument("--dry-run", action="store_true", help="仅拉取数据，不生成报告")
     parser.add_argument("--json-out", type=str, default=None, help="输出 JSON 数据文件")
     parser.add_argument("--test-data", type=str, default=None, help="使用本地测试数据文件 (跳过 API 拉取)")
-    parser.add_argument("--force-login", action="store_true", help="强制重新登录 (忽略已保存的 token)")
-    parser.add_argument("--logout", action="store_true", help="删除已保存的 token 并退出")
     parser.add_argument("--deep-analyze", type=str, default=None,
                         help="对指定跑步做深度分析（日期 YYYY-MM-DD、latest 或关键词）")
     parser.add_argument("--force", action="store_true",
@@ -147,28 +141,8 @@ def parse_args():
                         help="隔离输出目录（仅 --fetch-new 有效）：原始响应、处理结果和分圈全部写入该目录，不覆盖正式 data/")
     parser.add_argument("--user-note", type=str, default=None,
                         help="跑者体感备注（仅 --deep-analyze 模式有效，将与客观数据一起提交给 AI 综合分析）")
-    parser.add_argument("--backfill-since", type=str, default=None,
-                        help="强制从该日期起回溯拉取历史数据（YYYY-MM-DD），与现有缓存合并")
 
     return parser.parse_args()
-
-
-def get_credentials(args) -> tuple:
-    """获取账号密码 (命令行参数 或 交互式输入)"""
-    email = args.email
-    password = args.password
-
-    if not email:
-        email = input("Garmin 账号 (email): ").strip()
-
-    if not password:
-        password = getpass.getpass("Garmin 密码: ").strip()
-
-    if not email or not password:
-        logger.error("账号和密码不能为空")
-        sys.exit(1)
-
-    return email, password
 
 
 def _load_df_from_parquet(parquet_path: Path) -> pd.DataFrame:
@@ -841,15 +815,6 @@ def main():
     """主流程"""
     args = parse_args()
 
-    fetcher = None
-
-    if args.logout:
-        fetcher = GarminDataFetcher()
-        fetcher.logout(delete_tokens=True)
-        fetcher.close()
-        logger.info("已删除认证 token")
-        return
-
     if args.garmin_check:
         from src.personal_api import garmin_check
         ok = garmin_check()
@@ -911,50 +876,11 @@ def _main_inner(args):
             activities = json.load(f)
         logger.info(f"加载了 {len(activities)} 条测试活动")
     else:
-        # ==========================================================
-        # 路径 C: 正常模式（API 拉取 → 清洗 → 过滤 → 保存 parquet）
-        # ==========================================================
-        logger.info("Step 1/10: 认证 Garmin Connect...")
-        fetcher = GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
-
-        authenticated = False
-        if not args.force_login:
-            if fetcher.load_tokens():
-                logger.info("✅ 使用已保存的认证 token")
-                authenticated = True
-
-        if not authenticated:
-            email, password = get_credentials(args)
-            try:
-                if fetcher.login(email, password):
-                    authenticated = True
-                    logger.info("✅ 登录成功，token 已保存")
-                else:
-                    logger.error("登录失败")
-                    sys.exit(1)
-            except AuthenticationError as e:
-                logger.error(f"认证失败: {e}")
-                sys.exit(1)
-
-        logger.info("Step 2/10: 拉取跑步数据...")
-        # --backfill-since：强制从指定日期起回溯拉取，与现有缓存合并
-        backfill_start = None
-        if args.backfill_since:
-            try:
-                backfill_start = datetime.strptime(args.backfill_since, "%Y-%m-%d")
-            except ValueError:
-                logger.error(f"--backfill-since 日期格式错误: {args.backfill_since}（应为 YYYY-MM-DD）")
-                sys.exit(1)
-        try:
-            activities = fetcher.fetch_with_retry(force_start_date=backfill_start)
-            logger.info(f"✅ 成功拉取 {len(activities)} 条活动")
-        except Exception as e:
-            logger.error(f"数据拉取失败: {e}")
-            sys.exit(1)
-
-        if not activities:
-            logger.warning("无活动数据，退出")
-            sys.exit(0)
+        # garth SSO 抓取已移除（Personal API 验收通过）。
+        # 在线更新请使用 --fetch-new（中国区 Personal API）；
+        # 本地报告请使用 --load-parquet；调试请使用 --test-data。
+        logger.error("未指定数据来源。在线增量: --fetch-new；本地报告: --load-parquet；测试: --test-data")
+        sys.exit(1)
 
     # ----------------------------------------------------------
     # Step 3: 数据清洗与字段映射
@@ -1034,44 +960,21 @@ def _main_inner(args):
     _save_df_to_parquet(df, parquet_path)
 
     # ----------------------------------------------------------
-    # Step 7.5: 拉取分圈数据（新增活动）
+    # Step 7.5: 分圈数据
+    # 在线分圈拉取已迁移至 --fetch-new（Personal API + FIT 解析），此处不再拉取
     # ----------------------------------------------------------
-    if fetcher is None:
-        logger.info("test-data 模式，跳过分圈拉取")
-    else:
-        logger.info("Step 7.5/10: 拉取分圈数据...")
-        all_laps = []
-        for idx, row in df.iterrows():
-            act_id = row.get('activity_id')
-            if not act_id:
-                continue
-            # 仅拉取还没有分圈数据的活动
-            existing = fetcher._load_lap_cache(act_id)
-            if existing:
-                continue
-            laps = fetcher.fetch_lap_data(act_id)
-            if laps:
-                all_laps.extend(laps)
-        if all_laps:
-            fetcher._save_lap_cache(all_laps)
-            logger.info(f"✅ 分圈数据拉取完成: {len(all_laps)} 条记录")
-        else:
-            logger.info("✅ 无新增分圈数据")
+    logger.info("Step 7.5/10: 分圈数据由 --fetch-new 维护，本流程跳过")
 
     # ==========================================================
     # 统一报告入口：所有报告从 parquet 读取
     # ==========================================================
     df = _load_df_from_parquet(parquet_path)
     stats = _get_summary_stats(df)
-    try:
-        _run_reports(df, output_dir, stats, args.dry_run,
-                     args.deep_analyze, args.deep_analyze_all,
-                     args.max_hr, args.resting_hr, user_note=args.user_note,
-                     fetcher=fetcher, force=args.force,
-                     response_path=args.llm_response)
-    finally:
-        if fetcher is not None:
-            fetcher.close()
+    _run_reports(df, output_dir, stats, args.dry_run,
+                 args.deep_analyze, args.deep_analyze_all,
+                 args.max_hr, args.resting_hr, user_note=args.user_note,
+                 force=args.force,
+                 response_path=args.llm_response)
 
 
 if __name__ == "__main__":
