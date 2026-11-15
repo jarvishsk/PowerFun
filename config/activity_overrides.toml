@@ -1,0 +1,19 @@
+# PowerFun 5.0 第一批：人工课型覆盖配置（PRD F1）
+#
+# 仅允许把活动覆盖为现有键 tempo_run（节奏跑）或 intensity_run（间歇跑）。
+# pa_hr_laps 是人工确认的训练工作段 [起止 lap_index]（两端均包含），
+# 不是自动识别结果；节奏跑只用它计算 Pa:Hr，间歇跑默认不计算整场 Pa:Hr。
+# 人工覆盖只在报告入口生效，不回写 parquet；category_auto / category_source 保留原值。
+
+schema_version = 1
+
+[activities."659451010"]
+category = "tempo_run"
+pa_hr_laps = [4, 9]
+
+[activities."660460268"]
+category = "tempo_run"
+pa_hr_laps = [5, 11]
+
+[activities."656543045"]
+category = "intensity_run"

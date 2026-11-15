@@ -53,6 +53,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -75,7 +76,7 @@ from src.utils import (
 from src.data_fetcher import GarminDataFetcher
 from src.data_processor import DataProcessor
 from src.classifier import HeartRateClassifier, RunClassifier
-from src.chart_generator import ChartGenerator
+from src.chart_generator import BAND_MIN_SAMPLES, ChartGenerator
 from src.report_generator import ReportGenerator
 
 logging.basicConfig(
@@ -86,7 +87,8 @@ logging.basicConfig(
 logger = logging.getLogger("PowerFun")
 
 # LLM prompt 缓存版本号：prompt 结构变更时 +1，旧版本缓存视为无效
-LLM_PROMPT_VERSION = 12
+# 5.0.2 F6：比赛参照池/技术语义/比赛计划/点评指令变更，13 → 14（旧缓存安全未命中）
+LLM_PROMPT_VERSION = 14
 
 
 def parse_args():
@@ -127,6 +129,8 @@ def parse_args():
                         help="强制重新调用 LLM 并覆盖缓存（仅 --deep-analyze 有效）")
     parser.add_argument("--deep-analyze-all", action="store_true",
                         help="对所有跑步批量生成深析报告")
+    parser.add_argument("--deep-only", action="store_true",
+                        help="仅生成深析报告，不生成或更新综合报告（需配合 --deep-analyze）")
     parser.add_argument("--load-parquet", action="store_true",
                         help="从全量数据文件加载（跳过 API 拉取和清洗，直接从 parquet 读取报告数据）")
     parser.add_argument("--prepare-llm", action="store_true",
@@ -142,7 +146,10 @@ def parse_args():
     parser.add_argument("--user-note", type=str, default=None,
                         help="跑者体感备注（仅 --deep-analyze 模式有效，将与客观数据一起提交给 AI 综合分析）")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.deep_only and not (args.deep_analyze or args.deep_analyze_all):
+        parser.error("--deep-only 需配合 --deep-analyze 或 --deep-analyze-all 使用")
+    return args
 
 
 def _load_df_from_parquet(parquet_path: Path) -> pd.DataFrame:
@@ -175,13 +182,15 @@ def _export_csv(df: pd.DataFrame, csv_path: Path) -> None:
 
 def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id, N: int,
                                fetcher, temp_bucket=None) -> tuple:
-    """加载历史分圈基线（PRD F3）：近90天同温区 → 近90天跨温区 → 最近N次同类型（兜底）
+    """加载历史分圈基线：近90天同温区 → 近90天跨温区 → 最近N次同类型（兜底）
+
+    历史池至少需要覆盖区间带所需的每公里样本数，避免池已选定但图表必然无阴影。
 
     Returns:
         (recent_laps, baseline_note)：recent_laps 为历史分圈数据列表，
-        baseline_note 为基线构成标注（如「同温区 8 次」「跨温区 9 次」「跨全年 12 次」）
+        baseline_note 为基线构成标注（如「同温区 12 次」「跨温区 26 次」「跨全年 12 次」）
     """
-    from src.deep_analyzer import DeepRunAnalyzer, NO_TEMP_FILTER_CATEGORIES
+    from src.deep_analyzer import DeepRunAnalyzer, NO_TEMP_FILTER_CATEGORIES, RACE_CATEGORIES
 
     if category and 'category' in df.columns:
         df_same = df[df['category'] == category]
@@ -192,7 +201,22 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
     # 排除目标日期之后的所有数据，同时允许同日期更早的记录作为历史基线
     df_same = df_same[df_same['date'] <= target_ts]
 
-    # 基线选择（PRD F3）：近90天同温区(≥5次) → 近90天跨温区(≥5次) → 最近N次同类型(兜底)
+    # 5.0.2 F2：半马/全马分圈历史池 = 同距离全部历史比赛（精确 category，与 F1 同距离原则一致；
+    # 不执行 90 天窗口/温区/样本数兜底过滤，避免全马或其他赛事混入）
+    if category in RACE_CATEGORIES:
+        df_sel = df_same.sort_values('date', ascending=False).head(N)
+        recent_laps = []
+        for _, row in df_sel.iterrows():
+            hist_id = row.get('activity_id')
+            if hist_id:
+                hist_laps = fetcher._load_lap_cache(hist_id)
+                if hist_laps:
+                    recent_laps.append(hist_laps)
+        race_name = '半程马拉松' if category == 'half_marathon' else '全程马拉松'
+        return recent_laps, f'全部历史{race_name} {len(df_sel)} 场'
+
+    # 基线选择：近90天同温区(≥10次) → 近90天跨温区(≥10次) → 最近N次同类型(兜底)
+    # 与 BAND_MIN_SAMPLES 共用门槛，避免 5 次同温区提前命中却达不到阴影要求。
     # LSD 豁免温度过滤（PRD F1）：跳过同温区优先档直接不限温区档，标注「全部 LSD N 次」
     no_temp = category in NO_TEMP_FILTER_CATEGORIES
     cutoff_90 = target_ts - pd.Timedelta(days=90)
@@ -210,12 +234,12 @@ def _load_similar_lap_history(df: pd.DataFrame, category, target_ts, activity_id
         if temp_bucket is not None and not no_temp:
             d = _with_temp_bucket(df_90)
             d = d[d['_temp_bucket'] == temp_bucket]
-            if len(d) >= 5:
+            if len(d) >= BAND_MIN_SAMPLES:
                 df_sel = d
                 baseline_note = f'同温区 {len(d)} 次'
         if df_sel is None:
             d = _with_temp_bucket(df_90)
-            if len(d) >= 5:
+            if len(d) >= BAND_MIN_SAMPLES:
                 df_sel = d
                 baseline_note = f'跨温区 {len(d)} 次'
     if df_sel is None:
@@ -255,13 +279,19 @@ def _build_pa_hr_history_chart(df: pd.DataFrame, activity_id, target_ts,
         return None
 
     pa_hr_history_list = []
+    from src.deep_analyzer import select_pa_hr_scope
     for _, row in pa_hr_history_data.iterrows():
         hist_activity_id = row.get('activity_id')
         if hist_activity_id:
             hist_laps = fetcher._load_lap_cache(hist_activity_id)
             if hist_laps:
+                # 与当前活动共用同一选段逻辑（F2）：间歇跑等不适用活动不进历史趋势点
+                sel = select_pa_hr_scope(row.get('category', ''), hist_laps,
+                                         row.get('pa_hr_lap_start'), row.get('pa_hr_lap_end'))
+                if sel['scope'] == 'not_applicable':
+                    continue
                 hist_analyzer = DeepRunAnalyzer(df, max_hr=max_hr, resting_hr=resting_hr)
-                hist_pa_hr = hist_analyzer._calc_pa_hr(hist_laps)
+                hist_pa_hr = hist_analyzer._calc_pa_hr(sel['laps'])
                 if hist_pa_hr:
                     pa_hr_history_list.append({
                         'date': row['date'].strftime('%Y-%m-%d'),
@@ -326,7 +356,7 @@ def _validate_llm_response(content: str) -> list:
     return problems
 
 
-def _write_llm_request(activity_id, prompt: str, user_note: str) -> Path:
+def _write_llm_request(activity_id, prompt: str, user_note: str, analysis_hash: str = None) -> Path:
     """第一阶段：将模型请求写入 .runtime/llm/<activity_id>/，并记录请求上下文"""
     req_dir = Path(DEFAULT_CONFIG['llm_runtime_dir']) / str(activity_id)
     req_dir.mkdir(parents=True, exist_ok=True)
@@ -337,49 +367,96 @@ def _write_llm_request(activity_id, prompt: str, user_note: str) -> Path:
             'activity_id': str(activity_id),
             'user_note_hash': _user_note_hash(user_note),
             'prompt_version': LLM_PROMPT_VERSION,
+            'analysis_hash': analysis_hash or '',
         }, ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
     return request_path
 
 
-def _read_llm_cache(cache_path, user_note: str):
+def _json_safe(obj):
+    """把 analysis_data 转成确定性 JSON 可序列化结构（兼容 numpy/pandas 标量与日期，NaN→None）"""
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    if isinstance(obj, (datetime, timedelta)):
+        return obj.isoformat() if isinstance(obj, datetime) else str(obj)
+    if isinstance(obj, np.ndarray):
+        return _json_safe(obj.tolist())
+    if isinstance(obj, np.generic):
+        return _json_safe(obj.item())
+    if isinstance(obj, float) and obj != obj:  # NaN
+        return None
+    if obj is pd.NaT:
+        return None
+    try:
+        if obj is not None and pd.isna(obj):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return obj
+
+
+def _analysis_hash(analysis_data: dict) -> str:
+    """结构化 analysis_data 的稳定 SHA-256（5.0 第一批 F4）
+
+    - 确定性序列化（键排序一致）；在 brief_summary 等后加字段写入前计算；
+    - 不包含瞬时 HTML、输出路径、当前时间或 response 内容；
+    - 人工课型、Pa:Hr 段落或参照结果变化会自然改变哈希，使旧缓存失效。
+    """
+    blob = json.dumps(_json_safe(analysis_data), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
+def _read_llm_cache(cache_path, user_note: str, analysis_hash: str):
     """读取 LLM 缓存。命中返回 (content, model)，未命中返回 None
 
-    命中条件：缓存存在、prompt_version 与当前版本一致，
-    且（本次未传 --user-note 或 hash 与缓存一致）
+    命中条件：缓存存在、prompt_version 与当前版本一致、analysis_hash 匹配，
+    且（本次未传 --user-note 或 hash 与缓存一致）。
+    旧格式缓存（无 analysis_hash 行）按未命中处理，不报错、不删除旧文件。
     """
     if cache_path is None or not cache_path.exists():
         return None
     try:
         lines = cache_path.read_text(encoding='utf-8').split('\n')
-        # 新格式 frontmatter：user_note_hash / model / prompt_version + 空行 + 正文
-        if len(lines) < 5:
+        # frontmatter：user_note_hash / model / prompt_version / analysis_hash + 空行 + 正文
+        if len(lines) < 6:
             return None
         if not lines[0].startswith('user_note_hash: ') or not lines[1].startswith('model: '):
             return None
         if not lines[2].startswith('prompt_version: '):
             return None
+        if not lines[3].startswith('analysis_hash: '):
+            return None  # 旧三行格式：安全未命中
         if lines[2].split(': ', 1)[1].strip() != str(LLM_PROMPT_VERSION):
+            return None
+        if lines[3].split(': ', 1)[1].strip() != analysis_hash:
             return None
         if user_note and lines[0].split(': ', 1)[1] != _user_note_hash(user_note):
             return None
         model = lines[1].split(': ', 1)[1]
-        content = '\n'.join(lines[4:])
+        content = '\n'.join(lines[5:])
         return content, model
     except Exception as e:
         logger.warning(f"LLM 缓存读取失败，忽略缓存: {e}")
         return None
 
 
-def _write_llm_cache(cache_path, user_note: str, model: str, content: str) -> None:
-    """写入 LLM 缓存（frontmatter 三行 + 正文）"""
+def _write_llm_cache(cache_path, user_note: str, model: str, content: str,
+                     analysis_hash: str = None) -> None:
+    """写入 LLM 缓存（frontmatter 四行 + 正文）"""
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(
             f"user_note_hash: {_user_note_hash(user_note)}\n"
             f"model: {model}\n"
             f"prompt_version: {LLM_PROMPT_VERSION}\n"
+            f"analysis_hash: {analysis_hash or ''}\n"
             f"\n"
             f"{content}",
             encoding='utf-8',
@@ -395,7 +472,8 @@ def _resolve_llm_report(df: pd.DataFrame, analysis_data: dict, activity_id,
 
     流程：
     - 缓存命中（且非 --force、未指定 --llm-response）：打印 LLM_CACHE_HIT，直接渲染。
-    - 指定 --llm-response（第二阶段）：校验 activity_id/请求上下文、六小节顺序与 BRIEF 块，
+    - 指定 --llm-response（第二阶段）：校验同目录 context.json（缺失即拒绝）、
+      activity_id/请求上下文、六小节顺序与 BRIEF 块，
       通过后写缓存（model=KimiWork）并渲染；校验失败退出，不写缓存、不生成报告。
     - 缓存未命中（第一阶段）：构建原 Prompt 写入 .runtime/llm/<id>/request.md，
       打印 LLM_REQUEST_REQUIRED=<path> 后退出（on_miss='exit'）或返回 None（on_miss='skip'）。
@@ -406,6 +484,10 @@ def _resolve_llm_report(df: pd.DataFrame, analysis_data: dict, activity_id,
 
     cache_path = _llm_cache_path(activity_id)
 
+    # 分析事实哈希（F4）：在 brief_summary 等后加字段写入前计算；
+    # 缓存命中与 response 校验都以此为准，人工课型/工作段/参照变化自然失效。
+    analysis_hash = _analysis_hash(analysis_data)
+
     if response_path is not None:
         # ---------------- 第二阶段：渲染 KimiWork 已生成的回复 ----------------
         resp_file = Path(response_path).expanduser()
@@ -413,40 +495,47 @@ def _resolve_llm_report(df: pd.DataFrame, analysis_data: dict, activity_id,
             logger.error(f"response 文件不存在: {resp_file}")
             sys.exit(1)
         content = resp_file.read_text(encoding='utf-8')
-        # 请求上下文一致性校验（防止响应错配）
+        # 请求上下文一致性校验（防止响应错配）：context.json 必须随 response 一起提供，
+        # 缺失时拒绝，避免跳过 activity_id/体感/Prompt 版本/analysis_hash 全部校验。
         context_file = resp_file.parent / "context.json"
-        if context_file.exists():
-            try:
-                ctx = json.loads(context_file.read_text(encoding='utf-8'))
-            except json.JSONDecodeError as e:
-                logger.error(f"请求上下文解析失败: {e}")
+        if not context_file.exists():
+            logger.error(
+                f"缺少请求上下文文件: {context_file}。"
+                "response.md 必须与同目录 context.json 一起提供；未写缓存、未生成正式报告。"
+            )
+            sys.exit(1)
+        try:
+            ctx = json.loads(context_file.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"请求上下文解析失败: {e}")
+            sys.exit(1)
+        cur_ctx = {
+            'activity_id': activity_id,
+            'user_note_hash': _user_note_hash(user_note),
+            'prompt_version': LLM_PROMPT_VERSION,
+            'analysis_hash': analysis_hash,
+        }
+        for key, cur_val in cur_ctx.items():
+            if str(ctx.get(key)) != str(cur_val):
+                logger.error(
+                    f"response 上下文不一致: {key} 期望 {cur_val!r}，实际 {ctx.get(key)!r}。"
+                    "请确认 response.md 对应当前活动、体感、Prompt 版本和分析数据。"
+                )
                 sys.exit(1)
-            cur_ctx = {
-                'activity_id': activity_id,
-                'user_note_hash': _user_note_hash(user_note),
-                'prompt_version': LLM_PROMPT_VERSION,
-            }
-            for key, cur_val in cur_ctx.items():
-                if str(ctx.get(key)) != str(cur_val):
-                    logger.error(
-                        f"response 上下文不一致: {key} 期望 {cur_val!r}，实际 {ctx.get(key)!r}。"
-                        "请确认 response.md 对应当前活动、体感和 Prompt 版本。"
-                    )
-                    sys.exit(1)
         problems = _validate_llm_response(content)
         if problems:
             for p in problems:
                 logger.error(f"response 校验失败: {p}")
             logger.error("请修正 response.md 后重试；未写缓存、未生成正式报告。")
             sys.exit(1)
-        _write_llm_cache(cache_path, user_note, 'KimiWork', content)
+        _write_llm_cache(cache_path, user_note, 'KimiWork', content, analysis_hash=analysis_hash)
         llm_report, brief = LLMReportGenerator._parse_brief(content)
         analysis_data['brief_summary'] = brief
         logger.info("✅ response 校验通过，已写入 LLM 缓存（model=KimiWork）")
         return llm_report, 'KimiWork'
 
     if not force and cache_path is not None:
-        cached = _read_llm_cache(cache_path, user_note)
+        cached = _read_llm_cache(cache_path, user_note, analysis_hash)
         if cached is not None:
             content, model = cached
             print("LLM_CACHE_HIT")
@@ -457,7 +546,7 @@ def _resolve_llm_report(df: pd.DataFrame, analysis_data: dict, activity_id,
     # ---------------- 第一阶段：准备模型请求 ----------------
     llm_gen = LLMReportGenerator(df_all=df)
     prompt = llm_gen._build_prompt(analysis_data, user_note=user_note)
-    request_path = _write_llm_request(activity_id, prompt, user_note)
+    request_path = _write_llm_request(activity_id, prompt, user_note, analysis_hash=analysis_hash)
     print(f"LLM_REQUEST_REQUIRED={request_path}")
     if on_miss == 'skip':
         logger.warning("批量模式：已跳过本次深析报告渲染，等待 response 后单独渲染")
@@ -474,7 +563,12 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                           on_miss: str = 'exit') -> str:
     """对单次跑步生成深度分析报告"""
 
-    from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
+    from src.deep_analyzer import (
+        DeepRunAnalyzer,
+        LLMReportGenerator,
+        RACE_CATEGORIES,
+        RACE_LAP_MEDIAN_MIN_SAMPLES,
+    )
     from src.analysis_report import AnalysisReportGenerator
     from src.chart_generator import ChartGenerator
 
@@ -486,6 +580,8 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
     lap_pace_chart_html = ''
     lap_hr_chart_html = ''
     lap_count = 0
+    current_laps = []
+    race_plan = None
 
     if activity_id:
         fetcher_obj = fetcher or GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
@@ -504,18 +600,45 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
                 temp_bucket=temp_bucket,
             )
 
+            # 5.0.2 F5：结构化比赛计划（仅半马/全马；无配置返回 None；配置非法清晰报错停止）
+            from src.race_plans import RacePlanError, load_race_plan
+            race_plan = None
+            if category in RACE_CATEGORIES:
+                try:
+                    race_plan = load_race_plan(str(target_run.get('date'))[:10])
+                except RacePlanError as e:
+                    logger.error(f"比赛计划配置非法，停止生成报告: {e}")
+                    sys.exit(1)
+
+            # 5.0.2 F2：比赛分圈中位线门槛 n≥3，标签注明实际场次数
+            is_race = category in RACE_CATEGORIES
+            lap_median_min = (RACE_LAP_MEDIAN_MIN_SAMPLES if is_race else None)
+            race_lap_label = None
+            if is_race:
+                race_name = '半程马拉松' if category == 'half_marathon' else '全程马拉松'
+                n_hist = len(recent_laps)
+                race_lap_label = f'{n_hist} 场历史{race_name}参考中位' if n_hist > 0 else None
+
             # 使用 DeepRunAnalyzer 的 _analyze_laps 方法
             analyzer_for_laps = DeepRunAnalyzer(df, target_date=target_run.get('date'),
                                                  max_hr=max_hr, resting_hr=resting_hr)
-            lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
+            lap_data = analyzer_for_laps._analyze_laps(
+                current_laps, recent_laps,
+                median_min_samples=lap_median_min,
+                race_history_label=race_lap_label)
             lap_data['baseline_note'] = lap_baseline_note
 
             # 生成分圈配速图和心率图（需求 4：拆分为两张图）
+            # 5.0.1 F1：两张图只消费 _analyze_laps 的统一每公里历史统计
+            # 5.0.2 F2：比赛图注使用「N 场历史半马/全马参考中位」标签
             try:
                 cat_name = target_run.get('category_name', '跑步')
                 chart_gen = ChartGenerator()
-                lap_pace_chart_html = chart_gen.generate_lap_pace_chart_v2(current_laps, recent_laps, cat_name)
-                lap_hr_chart_html = chart_gen.generate_lap_hr_chart(current_laps, recent_laps, cat_name)
+                unified_stats = (lap_data or {}).get('history_stats')
+                lap_pace_chart_html = chart_gen.generate_lap_pace_chart_v2(
+                    current_laps, unified_stats, cat_name, median_label=race_lap_label)
+                lap_hr_chart_html = chart_gen.generate_lap_hr_chart(
+                    current_laps, unified_stats, cat_name, median_label=race_lap_label)
             except Exception as e:
                 logger.warning(f"分圈图表生成失败: {e}")
                 lap_pace_chart_html = ''
@@ -523,7 +646,7 @@ def _generate_deep_report(df: pd.DataFrame, target_run: pd.Series,
 
     analyzer = DeepRunAnalyzer(df, target_date=target_run.get('date'),
                                max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data,
-                               raw_laps=current_laps)
+                               raw_laps=current_laps, race_plan=race_plan)
     analysis_data = analyzer.analyze(target_run)
 
     # 计算Pa:Hr历史趋势（如果当前跑步>=3km且有lap数据）
@@ -596,7 +719,7 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
                  dry_run: bool, deep_analyze: str, deep_analyze_all: bool,
                  max_hr: int, resting_hr: int, user_note: str = None,
                  fetcher=None, force: bool = False,
-                 response_path: str = None) -> None:
+                 response_path: str = None, deep_only: bool = False) -> None:
     """从 parquet 数据生成报告（跑步分析报告 + 深度分析报告）
 
     这是报告的统一入口。正常模式和 --load-parquet 模式都走这条路。
@@ -608,6 +731,19 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     if dry_run:
         logger.info("Dry-run 模式，跳过报告生成")
         return
+
+    # ----------------------------------------------------------
+    # 人工课型覆盖（5.0 第一批 F1）：在任何深析/综合报告使用 df 之前以复制方式应用。
+    # 保留 category_auto / category_source，不回写 parquet；
+    # stats 仅含总量统计（不含课型维度），覆盖后无需重算。
+    # 配置非法时在报告前给出清晰错误并停止。
+    # ----------------------------------------------------------
+    from src.activity_overrides import ActivityOverrideError, apply_activity_overrides
+    try:
+        df = apply_activity_overrides(df)
+    except ActivityOverrideError as e:
+        logger.error(f"人工课型配置错误: {e}")
+        sys.exit(1)
 
     # 确保报告本地静态资源（Plotly/jQuery/DataTables）就位
     ensure_report_assets(output_dir)
@@ -705,80 +841,27 @@ def _run_reports(df: pd.DataFrame, output_dir: Path, stats: dict,
     # ----------------------------------------------------------
     if not deep_analyze and not deep_analyze_all:
         logger.info("Step 7/10: 生成深度分析报告（最近一次跑步）...")
-        from src.deep_analyzer import DeepRunAnalyzer, LLMReportGenerator
-        from src.analysis_report import AnalysisReportGenerator
 
         analysis_dir = output_dir / "PowerFun_Reports"
         analysis_dir.mkdir(parents=True, exist_ok=True)
 
         latest_run = df.iloc[-1]  # DataFrame 已按日期排序
-        activity_id = latest_run.get('activity_id')
-        target_ts = pd.Timestamp(latest_run.get('date'))  # 用于过滤未来数据（正常模式即为最新日期）
-        lap_data = {}
-        recent_laps = []
-        lap_pace_chart_html = ''
-        lap_hr_chart_html = ''
-        lap_count = 0
-        current_laps = None
 
-        if activity_id:
-            temp_fetcher = GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
-            current_laps = temp_fetcher._load_lap_cache(activity_id)
+        # 与指定日期/最新/批量共用同一分析路径 _generate_deep_report（5.0 第一批 F5）
+        deep_fetcher = fetcher or GarminDataFetcher(state_file=DEFAULT_CONFIG["state_file"])
+        try:
+            _generate_deep_report(df, latest_run, analysis_dir, output_dir,
+                                  max_hr=max_hr, resting_hr=resting_hr,
+                                  fetcher=deep_fetcher,
+                                  user_note=user_note,
+                                  response_path=response_path)
+        finally:
+            if not fetcher:
+                deep_fetcher.close()
 
-            if current_laps:
-                lap_count = len(current_laps)
-                category = latest_run.get('category', '')
-                N = DEFAULT_CONFIG.get('deep_lap_history_n', 100)
-                temp_bucket = DeepRunAnalyzer._get_temp_bucket(latest_run)
-                recent_laps, lap_baseline_note = _load_similar_lap_history(
-                    df, category, target_ts, activity_id, N, temp_fetcher,
-                    temp_bucket=temp_bucket,
-                )
-
-                analyzer_for_laps = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
-                                                     max_hr=max_hr, resting_hr=resting_hr)
-                lap_data = analyzer_for_laps._analyze_laps(current_laps, recent_laps)
-                lap_data['baseline_note'] = lap_baseline_note
-
-                try:
-                    cat_name = latest_run.get('category_name', '跑步')
-                    chart_gen_lap = ChartGenerator()
-                    lap_pace_chart_html = chart_gen_lap.generate_lap_pace_chart_v2(current_laps, recent_laps, cat_name)
-                    lap_hr_chart_html = chart_gen_lap.generate_lap_hr_chart(current_laps, recent_laps, cat_name)
-                except Exception as e:
-                    logger.warning(f"分圈图表生成失败: {e}")
-                    lap_pace_chart_html = ''
-                    lap_hr_chart_html = ''
-
-        analyzer = DeepRunAnalyzer(df, target_date=latest_run.get('date'),
-                                   max_hr=max_hr, resting_hr=resting_hr, lap_data=lap_data,
-                                   raw_laps=current_laps)
-        analysis_data = analyzer.analyze(latest_run)
-
-        pa_hr_current = analysis_data.get('pa_hr')
-        pa_hr_history_chart = _build_pa_hr_history_chart(
-            df, latest_run.get('activity_id'), target_ts, max_hr, resting_hr, temp_fetcher
-            if activity_id else None
-        )
-
-        # 在 Pa:Hr 历史计算完成后关闭 fetcher（避免在关闭后访问 lap 缓存）
-        if activity_id:
-            temp_fetcher.close()
-
-        llm_report, actual_model = _resolve_llm_report(
-            df, analysis_data, activity_id,
-            user_note=user_note, response_path=response_path)
-
-        report_gen_deep = AnalysisReportGenerator(str(analysis_dir))
-        html_path = report_gen_deep.generate(analysis_data, llm_report,
-                                             lap_pace_chart_html=lap_pace_chart_html,
-                                             lap_hr_chart_html=lap_hr_chart_html,
-                                             lap_count=lap_count,
-                                             pa_hr=pa_hr_current,
-                                             pa_hr_history=pa_hr_history_chart,
-                                             model_name=actual_model)
-
-        logger.info(f"✅ 深度分析报告已生成: {html_path}")
+    if deep_only:
+        logger.info("仅深度分析模式：跳过综合报告，已有 PowerFun.html 不更新")
+        return
 
     # ----------------------------------------------------------
     # Step 8: 生成可视化图表
@@ -852,7 +935,7 @@ def _main_inner(args):
                      args.deep_analyze, args.deep_analyze_all,
                      args.max_hr, args.resting_hr, user_note=args.user_note,
                      fetcher=fetcher, force=args.force,
-                     response_path=args.llm_response)
+                     response_path=args.llm_response, deep_only=args.deep_only)
         return
 
     # ==========================================================
@@ -974,7 +1057,7 @@ def _main_inner(args):
                  args.deep_analyze, args.deep_analyze_all,
                  args.max_hr, args.resting_hr, user_note=args.user_note,
                  force=args.force,
-                 response_path=args.llm_response)
+                 response_path=args.llm_response, deep_only=args.deep_only)
 
 
 if __name__ == "__main__":

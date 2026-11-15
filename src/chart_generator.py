@@ -13,14 +13,15 @@ import logging
 import json
 
 from src.config import ZONE_COLORS as _ZONE_COLORS
+from src.lap_history_stats import LAP_RESIDUAL_MIN_M
 from src.utils import format_pace_mmss
 
 logger = logging.getLogger(__name__)
 
 # P20-P80 阴影带每公里样本门槛（配速图/心率图共用）
-# 2026-10-11 报告复现：末公里残圈过滤后仅剩 21 样本（<25 被误伤不绘制），
-# 漏斗爆炸已由残圈过滤 + 边缘平滑解决，门槛回退至 20
-BAND_MIN_SAMPLES = 20
+# 以每公里有效样本为唯一门槛，与 IQR 过滤启用条件一致；
+# 残圈过滤 + IQR + 边缘平滑继续控制异常值和末段波动。
+BAND_MIN_SAMPLES = 10
 
 
 class ChartGenerator:
@@ -1295,18 +1296,6 @@ class ChartGenerator:
             charts['temp_efficiency_cost'] = {}
 
         return charts
-    
-    @staticmethod
-    def _iqr_filter(values: list) -> list:
-        """IQR 异常值过滤：剔除 [Q1-1.5×IQR, Q3+1.5×IQR] 之外的值。
-        样本 <4 时不过滤（小样本分位数不稳定）；全部被剔除时保留原样本。"""
-        if len(values) < 4:
-            return values
-        q1, q3 = np.percentile(values, [25, 75])
-        iqr = q3 - q1
-        lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-        filtered = [v for v in values if lo <= v <= hi]
-        return filtered if filtered else values
 
     @staticmethod
     def _smooth_centered_3(values: list) -> list:
@@ -1339,142 +1328,95 @@ class ChartGenerator:
         total_m = sum(lap.get('distance_m', 0) for lap in lap_data)
         return int(total_m // 1000)
 
-    def generate_lap_pace_chart_v2(self, lap_data: list[dict], recent_laps: list[list[dict]],
-                                    cat_name: str = '') -> str:
+    def generate_lap_pace_chart_v2(self, lap_data: list[dict], history_stats: dict = None,
+                                    cat_name: str = '', median_label: str = None) -> str:
         """生成分圈配速对比图表（独立配速图）
-        
+
+        5.0.1 F1：历史基线只消费统一每公里统计（compute_per_km_history_stats 的
+        by_km 结果），不再自行遍历 recent_laps 计算中位数/P20-P80。
+        5.0.2 F2：median_label 传入时替换中位线名称（如「3 场半马参考中位」）。
+
         Args:
             lap_data: 本次分圈数据列表
-            recent_laps: 前 N 次同类型分圈数据列表
+            history_stats: 统一每公里历史统计结果 dict（含 'by_km'），可为 None
             cat_name: 跑步类型名称
-        
+            median_label: 历史中位线显示名称（None 用默认「历史中位配速」）
+
         Returns:
             Plotly 图表的 JSON 字符串
         """
         try:
             if not lap_data:
                 return json.dumps({})
-            
+
             current = sorted(lap_data, key=lambda x: x.get('lap_index', 0))
-            
+
             # 需求 2：距离取整，只显示到 total_km
             total_km = self._compute_total_km(lap_data)
             if total_km <= 0:
                 return json.dumps({})
-            
+
             # 只取 1~total_km 的分圈数据
             current = [lap for lap in current if 1 <= lap.get('lap_index', 0) <= total_km]
             if not current:
                 return json.dumps({})
-            
+
             x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
             pace_values = [lap.get('pace_sec_per_km', 0) for lap in current]
             pace_fmt = [self._format_pace(p) for p in pace_values]
 
-            # 需求 3：历史数据处理——同一 KM 序号，只使用有数据的记录计算
-            # 残圈过滤：仅纳入完整公里圈（distance_m >= 950），避免残圈以 lap_index
-            # 身份混入其他跑步的同公里基线；缺距离字段的圈保守保留
-            # IQR 异常值过滤 + numpy 真分位数插值；
-            # 阈值：分类历史 run 总数 >=30 才具备 P20-P80 带资格，
-            #       当前公里样本 >=BAND_MIN_SAMPLES 才绘制该公里阴影（残圈过滤+边缘平滑已防漏斗爆炸），
-            #       当前公里样本 >=5 才绘制中位线，
-            #       当前公里样本 >=10 才启用 IQR 过滤。
+            # 5.0.1 F1：历史中位线/区间直接读取统一统计（残圈过滤、IQR、样本门槛
+            # 均在 lap_history_stats 内完成）；P20/P80 数组仅做展示用居中平滑，不回写统计
+            by_km = (history_stats or {}).get('by_km', {})
+            if (history_stats or {}).get('residual_dropped'):
+                logger.info(
+                    f"分圈配速图历史基线：剔除残圈 {history_stats['residual_dropped']} 圈"
+                    f"（distance_m<{LAP_RESIDUAL_MIN_M}）")
             hist_median_pace, hist_p20_pace, hist_p80_pace = [], [], []
-            category_enough = len(recent_laps) >= 30
-            if recent_laps:
-                residual_drop = 0
-                filtered_recent = []
-                for run_laps in recent_laps:
-                    kept = []
-                    for rl in run_laps:
-                        dist = rl.get('distance_m')
-                        if dist is not None and dist < 950:
-                            residual_drop += 1
-                        else:
-                            kept.append(rl)
-                    filtered_recent.append(kept)
-                if residual_drop:
-                    logger.info(f"分圈配速图历史基线：剔除残圈 {residual_drop} 圈（distance_m<950）")
+            for lap_idx in range(1, total_km + 1):
+                e = by_km.get(lap_idx, {})
+                hist_median_pace.append(e.get('median_pace'))
+                hist_p20_pace.append(e.get('p20_pace'))
+                hist_p80_pace.append(e.get('p80_pace'))
 
-                raw_counts, filtered_counts = {}, {}
-                for lap_idx in range(1, total_km + 1):
-                    paces = []
-                    raw_count = 0
-                    for run_laps in filtered_recent:
-                        for rl in run_laps:
-                            if rl.get('lap_index') == lap_idx:
-                                raw_count += 1
-                                p = rl.get('pace_sec_per_km', 0)
-                                if p > 0:
-                                    paces.append(p)
+            # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
+            hist_p20_pace = self._smooth_centered_3(hist_p20_pace)
+            hist_p80_pace = self._smooth_centered_3(hist_p80_pace)
 
-                    if paces:
-                        if raw_count >= 10:
-                            paces = self._iqr_filter(paces)
-                        raw_counts[lap_idx] = raw_count
-                        filtered_counts[lap_idx] = len(paces)
-                        if len(paces) >= 5:
-                            hist_median_pace.append(float(np.percentile(paces, 50)))
-                        else:
-                            hist_median_pace.append(None)
-                        if category_enough and len(paces) >= BAND_MIN_SAMPLES:
-                            hist_p20_pace.append(float(np.percentile(paces, 20)))
-                            hist_p80_pace.append(float(np.percentile(paces, 80)))
-                        else:
-                            hist_p20_pace.append(None)
-                            hist_p80_pace.append(None)
-                    else:
-                        hist_median_pace.append(None)
-                        hist_p20_pace.append(None)
-                        hist_p80_pace.append(None)
+            hist_x = list(range(1, total_km + 1))
 
-                # 残圈过滤后样本构成变化日志（仅打印有变化的公里）
-                changed = {k: (raw_counts[k], filtered_counts[k])
-                           for k in filtered_counts
-                           if filtered_counts[k] != raw_counts.get(k)}
-                if changed:
-                    logger.info(f"分圈配速图基线样本变化（公里: 过滤前→过滤后）: "
-                                + ", ".join(f"km{k}: {v[0]}→{v[1]}" for k, v in changed.items()))
+            fig = go.Figure()
 
-                # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
-                hist_p20_pace = self._smooth_centered_3(hist_p20_pace)
-                hist_p80_pace = self._smooth_centered_3(hist_p80_pace)
+            # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
+            # 当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
+            # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
+            if any(v is not None for v in hist_p20_pace):
+                band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
+                        if a is not None and b is not None]
+                if band:
+                    bx = [p[0] for p in band]
+                    fig.add_trace(go.Scatter(
+                        x=bx + bx[::-1],
+                        y=[p[1] for p in band] + [p[2] for p in reversed(band)],
+                        fill='toself',
+                        fillcolor='rgba(65, 105, 225, 0.15)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='历史P20-P80区间',
+                        hoverinfo='skip',
+                        showlegend=True,
+                    ))
 
-                hist_x = list(range(1, total_km + 1))
-
-                fig = go.Figure()
-
-                # 填充区域：历史P20 vs P80配速区间（注意：配速越小越快，P20是较快区间，P80是较慢区间）
-                # 仅当分类历史样本充足且当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
-                # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
-                if category_enough:
-                    band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_pace, hist_p80_pace)
-                            if a is not None and b is not None]
-                    if band:
-                        bx = [p[0] for p in band]
-                        fig.add_trace(go.Scatter(
-                            x=bx + bx[::-1],
-                            y=[p[1] for p in band] + [p[2] for p in reversed(band)],
-                            fill='toself',
-                            fillcolor='rgba(65, 105, 225, 0.15)',
-                            line=dict(color='rgba(255,255,255,0)'),
-                            name='历史P20-P80区间',
-                            hoverinfo='skip',
-                            showlegend=True,
-                        ))
-
-                # 历史中位配速（灰色虚线）
-                fig.add_trace(go.Scatter(
-                    x=hist_x,
-                    y=hist_median_pace,
-                    mode='lines',
-                    name='历史中位配速',
-                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
-                    hovertemplate='公里 %{x}<br>历史中位配速: %{customdata}/KM<extra></extra>',
-                    customdata=[self._format_pace(v) if v is not None else '--' for v in hist_median_pace],
-                ))
-            else:
-                fig = go.Figure()
+            # 历史中位配速（灰色虚线；无有效样本的公里为 None 不绘制）
+            _median_name = median_label or '历史中位配速'
+            fig.add_trace(go.Scatter(
+                x=hist_x,
+                y=hist_median_pace,
+                mode='lines',
+                name=_median_name,
+                line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                hovertemplate=f'公里 %{{x}}<br>{_median_name}: %{{customdata}}/KM<extra></extra>',
+                customdata=[self._format_pace(v) if v is not None else '--' for v in hist_median_pace],
+            ))
 
             # 本次配速曲线（最后 add，确保压在阴影带上方）
             fig.add_trace(go.Scatter(
@@ -1534,123 +1476,92 @@ class ChartGenerator:
             logger.warning(f"分圈配速图表生成失败: {e}")
             return json.dumps({})
 
-    def generate_lap_hr_chart(self, lap_data: list[dict], recent_laps: list[list[dict]],
-                               cat_name: str = '') -> str:
+    def generate_lap_hr_chart(self, lap_data: list[dict], history_stats: dict = None,
+                               cat_name: str = '', median_label: str = None) -> str:
         """生成分圈心率对比图表（独立心率图）
-        
+
+        5.0.1 F1：历史基线只消费统一每公里统计（by_km 结果）。
+        5.0.2 F2：median_label 传入时替换中位线名称（如「3 场半马参考中位」）。
+
         Args:
             lap_data: 本次分圈数据列表
-            recent_laps: 前 N 次同类型分圈数据列表
+            history_stats: 统一每公里历史统计结果 dict（含 'by_km'），可为 None
             cat_name: 跑步类型名称
-        
+            median_label: 历史中位线显示名称（None 用默认「历史中位心率」）
+
         Returns:
             Plotly 图表的 JSON 字符串
         """
         try:
             if not lap_data:
                 return json.dumps({})
-            
+
             current = sorted(lap_data, key=lambda x: x.get('lap_index', 0))
-            
+
             # 距离取整，与配速图保持一致
             total_km = self._compute_total_km(lap_data)
             if total_km <= 0:
                 return json.dumps({})
-            
+
             # 只取 1~total_km 的分圈数据
             current = [lap for lap in current if 1 <= lap.get('lap_index', 0) <= total_km]
             if not current:
                 return json.dumps({})
-            
+
             x_km = [lap.get('lap_index', i + 1) for i, lap in enumerate(current)]
             hr_values = [lap.get('avg_hr') for lap in current]
 
-            # 历史心率数据——同一 KM 序号，只使用有数据的记录计算
-            # 残圈过滤：仅纳入完整公里圈（distance_m >= 950），与配速图同口径；
-            # 阈值与配速图一致：阴影带样本 >=BAND_MIN_SAMPLES（残圈过滤+边缘平滑已防漏斗爆炸）
+            # 5.0.1 F1：历史中位心率/区间直接读取统一统计（与配速图同口径）；
+            # P20/P80 数组仅做展示用居中平滑，不回写统计
+            by_km = (history_stats or {}).get('by_km', {})
+            if (history_stats or {}).get('residual_dropped'):
+                logger.info(
+                    f"分圈心率图历史基线：剔除残圈 {history_stats['residual_dropped']} 圈"
+                    f"（distance_m<{LAP_RESIDUAL_MIN_M}）")
             hist_median_hr, hist_p20_hr, hist_p80_hr = [], [], []
-            category_enough = len(recent_laps) >= 30
-            if recent_laps:
-                residual_drop = 0
-                filtered_recent = []
-                for run_laps in recent_laps:
-                    kept = []
-                    for rl in run_laps:
-                        dist = rl.get('distance_m')
-                        if dist is not None and dist < 950:
-                            residual_drop += 1
-                        else:
-                            kept.append(rl)
-                    filtered_recent.append(kept)
-                if residual_drop:
-                    logger.info(f"分圈心率图历史基线：剔除残圈 {residual_drop} 圈（distance_m<950）")
+            for lap_idx in range(1, total_km + 1):
+                e = by_km.get(lap_idx, {})
+                hist_median_hr.append(e.get('median_hr'))
+                hist_p20_hr.append(e.get('p20_hr'))
+                hist_p80_hr.append(e.get('p80_hr'))
 
-                for lap_idx in range(1, total_km + 1):
-                    hrs = []
-                    for run_laps in filtered_recent:
-                        for rl in run_laps:
-                            if rl.get('lap_index') == lap_idx:
-                                h = rl.get('avg_hr')
-                                if h is not None and h > 0:
-                                    hrs.append(h)
+            # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
+            hist_p20_hr = self._smooth_centered_3(hist_p20_hr)
+            hist_p80_hr = self._smooth_centered_3(hist_p80_hr)
 
-                    if hrs:
-                        raw_count = len(hrs)
-                        if raw_count >= 10:
-                            hrs = self._iqr_filter(hrs)
-                        if len(hrs) >= 5:
-                            hist_median_hr.append(float(np.percentile(hrs, 50)))
-                        else:
-                            hist_median_hr.append(None)
-                        if category_enough and len(hrs) >= BAND_MIN_SAMPLES:
-                            hist_p20_hr.append(float(np.percentile(hrs, 20)))
-                            hist_p80_hr.append(float(np.percentile(hrs, 80)))
-                        else:
-                            hist_p20_hr.append(None)
-                            hist_p80_hr.append(None)
-                    else:
-                        hist_median_hr.append(None)
-                        hist_p20_hr.append(None)
-                        hist_p80_hr.append(None)
+            hist_x = list(range(1, total_km + 1))
 
-                # 边缘平滑：P20/P80 数组做窗口=3 居中滚动均值（端点窗口截断，None 跳过不填 0）
-                hist_p20_hr = self._smooth_centered_3(hist_p20_hr)
-                hist_p80_hr = self._smooth_centered_3(hist_p80_hr)
+            fig = go.Figure()
 
-                hist_x = list(range(1, total_km + 1))
+            # 填充区域：历史P20 vs P80心率区间
+            # 当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
+            # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
+            if any(v is not None for v in hist_p20_hr):
+                band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
+                        if a is not None and b is not None]
+                if band:
+                    bx = [p[0] for p in band]
+                    fig.add_trace(go.Scatter(
+                        x=bx + bx[::-1],
+                        y=[p[1] for p in band] + [p[2] for p in reversed(band)],
+                        fill='toself',
+                        fillcolor='rgba(255, 107, 107, 0.15)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='历史P20-P80区间',
+                        hoverinfo='skip',
+                        showlegend=True,
+                    ))
 
-                fig = go.Figure()
-
-                # 填充区域：历史P20 vs P80心率区间
-                # 仅当分类历史样本充足且当前公里样本 >=BAND_MIN_SAMPLES 时绘制；剔除无数据公里，避免阴影掉到 0
-                # band trace 最先 add，保证半透明阴影压在主线和中位线下方（z-order 置底）
-                if category_enough:
-                    band = [(x, a, b) for x, a, b in zip(hist_x, hist_p20_hr, hist_p80_hr)
-                            if a is not None and b is not None]
-                    if band:
-                        bx = [p[0] for p in band]
-                        fig.add_trace(go.Scatter(
-                            x=bx + bx[::-1],
-                            y=[p[1] for p in band] + [p[2] for p in reversed(band)],
-                            fill='toself',
-                            fillcolor='rgba(255, 107, 107, 0.15)',
-                            line=dict(color='rgba(255,255,255,0)'),
-                            name='历史P20-P80区间',
-                            hoverinfo='skip',
-                            showlegend=True,
-                        ))
-
-                # 历史中位心率（灰色虚线）
-                fig.add_trace(go.Scatter(
-                    x=hist_x,
-                    y=hist_median_hr,
-                    mode='lines',
-                    name='历史中位心率',
-                    line=dict(color='#999999', width=2, dash='dash', shape='spline'),
-                    hovertemplate='公里 %{x}<br>历史中位心率: %{y:.0f} bpm<extra></extra>',
-                ))
-            else:
-                fig = go.Figure()
+            # 历史中位心率（灰色虚线；无有效样本的公里为 None 不绘制）
+            _median_name_hr = median_label or '历史中位心率'
+            fig.add_trace(go.Scatter(
+                x=hist_x,
+                y=hist_median_hr,
+                mode='lines',
+                name=_median_name_hr,
+                line=dict(color='#999999', width=2, dash='dash', shape='spline'),
+                hovertemplate=f'公里 %{{x}}<br>{_median_name_hr}: %{{y:.0f}} bpm<extra></extra>',
+            ))
 
             # 本次心率曲线（最后 add，确保压在阴影带上方）
             fig.add_trace(go.Scatter(

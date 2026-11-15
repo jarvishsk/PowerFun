@@ -22,7 +22,8 @@ FIT_FIXTURE = Path(__file__).parent / 'fixtures' / '659451010.fit'
 DATA_FILES = ("running_data.parquet", "running_data_cleaned.csv",
               "activities_cache.json", "lap_data.parquet", "last_fetch.json")
 
-LATEST_ID = 660164388  # 当前缓存中最新的活动（2026-11-08）
+LATEST_ID = 662381792  # 当前缓存中最新的活动（2026-11-15；旧值 661585068/2026-11-12，
+# 更新依据：发布批次登记 11-15 横店半马后，661585068 不再是缓存最新活动）
 
 
 class FakeClient:
@@ -85,6 +86,11 @@ def _latest_record(box):
     return rec
 
 
+def _latest_record_by_id(box, activity_id):
+    rec = next(a for a in box.cache if a.get('activityId') == activity_id)
+    return rec
+
+
 def _read_parquet(box):
     df = pd.read_parquet(box.data_dir / 'running_data.parquet')
     return df
@@ -112,8 +118,10 @@ def _assert_parquet_csv_consistent(box):
 def test_new_activity_appends_to_parquet_and_csv(sandbox, monkeypatch):
     new_rec = copy.deepcopy(_latest_record(sandbox))
     new_rec['activityId'] = 661000001
-    new_rec['startTimeLocal'] = '2026-11-10 19:45:38'
-    new_rec['startTimeGMT'] = '2026-11-10 11:45:38.0'
+    new_local = pd.Timestamp(new_rec['startTimeLocal']) + pd.Timedelta(days=1)
+    new_rec['startTimeLocal'] = new_local.strftime('%Y-%m-%d %H:%M:%S')
+    new_rec['startTimeGMT'] = (pd.Timestamp(new_rec['startTimeGMT']) + pd.Timedelta(days=1)) \
+        .strftime('%Y-%m-%d %H:%M:%S.0')
     new_rec['activityName'] = '杭州市 跑步'
     _client_for([new_rec], monkeypatch)
 
@@ -123,7 +131,7 @@ def test_new_activity_appends_to_parquet_and_csv(sandbox, monkeypatch):
     assert '661000001' in set(df['activity_id'].astype(str))
     csv = _read_csv(sandbox)
     assert len(csv) == len(df)
-    assert csv['date_str'].max() == '2026-11-10', "CSV 最后日期未同步"
+    assert csv['date_str'].max() == new_local.strftime('%Y-%m-%d'), "CSV 最后日期未同步"
     assert sandbox.lap_calls == [661000001]
     _assert_parquet_csv_consistent(sandbox)
 
@@ -149,25 +157,30 @@ def test_existing_activity_field_update_upserts_main_table(sandbox, monkeypatch)
 # 场景 3：自定义标题保护 → 缓存保留自定义标题，但其他字段照常更新
 # ------------------------------------------------------------------
 def test_custom_title_protection_does_not_block_field_updates(sandbox, monkeypatch):
+    # 专用常量：标题保护仅对「自动标题以"跑步"结尾」的活动生效（personal_api._is_auto_title），
+    # 故场景 3 固定使用自动标题活动 661585068，而不随 LATEST_ID 切换到赛事活动
+    # （旧值：复用 LATEST_ID=661585068；更新依据：5.0.1 批次 LATEST_ID 改为 662381792 后
+    #  该活动自动标题为「金华市 - 横店马拉松」，不属于受保护的自动标题形态）
+    title_id = 661585068
     cache_file = sandbox.data_dir / 'activities_cache.json'
     cache = json.loads(cache_file.read_text(encoding='utf-8'))
-    rec = next(a for a in cache if a.get('activityId') == LATEST_ID)
+    rec = next(a for a in cache if a.get('activityId') == title_id)
     rec['activityName'] = '出差归来的恢复跑'  # 用户在 Connect 自定义的标题
     cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding='utf-8')
 
-    fetched = copy.deepcopy(_latest_record(sandbox))
+    fetched = copy.deepcopy(_latest_record_by_id(sandbox, title_id))
     assert str(fetched.get('activityName')).endswith('跑步'), "拉取记录应为自动标题"
     fetched['calories'] = float(fetched.get('calories') or 0) + 50.0
     _client_for([fetched], monkeypatch)
 
     assert pa.fetch_new() is True
     after = json.loads(cache_file.read_text(encoding='utf-8'))
-    rec_after = next(a for a in after if a.get('activityId') == LATEST_ID)
+    rec_after = next(a for a in after if a.get('activityId') == title_id)
     assert rec_after['activityName'] == '出差归来的恢复跑', "自定义标题被覆盖"
     assert rec_after['calories'] == fetched['calories'], "标题保护不应阻断其他字段更新"
 
     df = _read_parquet(sandbox)
-    row = df[df['activity_id'].astype(str) == str(LATEST_ID)].iloc[0]
+    row = df[df['activity_id'].astype(str) == str(title_id)].iloc[0]
     assert row['calories'] == fetched['calories'], "其他字段更新未回流主表"
     assert row['title'] == '出差归来的恢复跑', "主表标题未保留自定义标题"
     _assert_parquet_csv_consistent(sandbox)

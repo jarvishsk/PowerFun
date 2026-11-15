@@ -238,6 +238,11 @@ ANALYSIS_HTML_TEMPLATE = """
     <div class="section">
         <h2>📊 每公里配速</h2>
         {% if lap_baseline_note %}<p style="color:#999;font-size:12px;margin:-2px 0 10px;">对比前 {{ lap_sample_size }} 次同类型跑步（{{ lap_baseline_note }}）</p>{% endif %}
+        {% if lap_sample_size > 0 and not lap_median_available %}
+        <p style="color:#999;font-size:12px;margin:-2px 0 10px;">历史中位线需每公里至少 5 个有效样本；本次各公里样本不足，仅展示本次曲线。</p>
+        {% elif lap_partial_median %}
+        <p style="color:#999;font-size:12px;margin:-2px 0 10px;">部分公里历史样本不足 5 个，中位线/区间仅在有足够样本的公里显示。</p>
+        {% endif %}
         <div id="lap-pace-chart" style="border-radius:8px;overflow:hidden;"></div>
 
     </div>
@@ -274,7 +279,7 @@ ANALYSIS_HTML_TEMPLATE = """
     
     {% if pa_hr %}
     <div class="section">
-        <h2>🔄 有氧解耦分析（Pa:Hr）</h2>
+        <h2>🔄 有氧解耦分析（Pa:Hr）{% if pa_hr_scope_label %}<span style="font-size:12px;color:#999;font-weight:normal;">（{{ pa_hr_scope_label }}）</span>{% endif %}</h2>
         <style>
         .pa-hr-row {
             display: flex;
@@ -353,12 +358,35 @@ ANALYSIS_HTML_TEMPLATE = """
         </script>
         {% endif %}
     </div>
+    {% elif pa_hr_na_reason %}
+    <div class="section">
+        <h2>🔄 有氧解耦分析（Pa:Hr）</h2>
+        <p style="color:#666;font-size:13px;">{{ pa_hr_na_reason }}。</p>
+    </div>
     {% endif %}
     
-    {% if comparison and comparison.get('sample_size', 0) >= 1 %}
+    {% if comparison %}
     <div class="section">
+        {% if comparison.get('comparison_kind') == 'same_distance_race_history' %}
+        <h2>📈 对比分析（同距离历史比赛·成绩参照）</h2>
+        {% else %}
         <h2>📈 对比分析（同类型中位数）</h2>
-        
+        {% endif %}
+
+        {% if comparison.get('sample_size', 0) >= 1 %}
+        {% if comparison.get('comparison_kind') == 'same_distance_race_history' %}
+        <p style="color:#0c5460;font-size:12px;background:#d1ecf1;border-radius:4px;padding:6px 10px;">
+            同距离历史比赛成绩参照：参照池共 {{ comparison.sample_size }} 场历史{% if comparison.get('pool_category') == 'half_marathon' %}半程马拉松{% else %}全程马拉松{% endif %}（跨全年，不限温区/赛道/爬升/比赛目标）。成绩与执行比较允许；纯能力方向结论不得仅凭该池推出。
+        </p>
+        {% set desc_only = false %}
+        {% elif comparison.get('descriptive_only') %}
+        <p style="color:#856404;font-size:12px;background:#fff3cd;border-radius:4px;padding:6px 10px;">
+            跨全年描述性基线：基线池共 {{ comparison.sample_size }} 次同类型活动（不限温区）{% if comparison.get('near_subset_size') %}，心率/配速/功率/效率使用距离相近子集 {{ comparison.near_subset_size }} 次{% endif %}——课程、天气、比赛目标可能不同，仅作描述，不构成能力方向证据。
+        </p>
+        {% set desc_only = comparison.get('descriptive_only') %}
+        {% else %}
+        {% set desc_only = false %}
+        {% endif %}
         {% if comparison.get('ability') %}
         <h3>能力变化</h3>
         <style>
@@ -408,7 +436,7 @@ ANALYSIS_HTML_TEMPLATE = """
         <div class="comparison-row">
             <div class="metric-label">💓 心率</div>
             <div class="metric-values">{{ comparison.ability.hr_trend.current|int }}bpm <span class="vs-badge">VS</span> {{ comparison.ability.hr_trend.history_median|int }}bpm</div>
-            <div class="metric-trend"><span class="trend-badge {{ 'neutral' if comparison.ability.hr_trend.verdict == '持平' else ('good' if (comparison.ability.hr_trend.diff < 0) else 'bad') }}">{{ comparison.ability.hr_trend.verdict }}</span></div>
+            <div class="metric-trend">{% if desc_only %}<span class="trend-badge warn">仅作描述</span>{% else %}<span class="trend-badge {{ 'neutral' if comparison.ability.hr_trend.verdict == '持平' else ('good' if (comparison.ability.hr_trend.diff < 0) else 'bad') }}">{{ comparison.ability.hr_trend.verdict }}</span>{% endif %}</div>
         </div>
         {% endif %}
         
@@ -416,7 +444,7 @@ ANALYSIS_HTML_TEMPLATE = """
         <div class="comparison-row">
             <div class="metric-label">🏃 配速</div>
             <div class="metric-values">{{ comparison.ability.pace_trend.current|format_pace }} <span class="vs-badge">VS</span> {{ comparison.ability.pace_trend.history_median|format_pace }}</div>
-            <div class="metric-trend"><span class="trend-badge {{ 'neutral' if comparison.ability.pace_trend.verdict == '持平' else ('good' if (comparison.ability.pace_trend.diff < 0) else 'bad') }}">{{ comparison.ability.pace_trend.verdict }}</span></div>
+            <div class="metric-trend">{% if desc_only %}<span class="trend-badge warn">仅作描述</span>{% else %}<span class="trend-badge {{ 'neutral' if comparison.ability.pace_trend.verdict == '持平' else ('good' if (comparison.ability.pace_trend.diff < 0) else 'bad') }}">{{ comparison.ability.pace_trend.verdict }}</span>{% endif %}</div>
         </div>
         {% endif %}
         
@@ -424,7 +452,7 @@ ANALYSIS_HTML_TEMPLATE = """
         <div class="comparison-row">
             <div class="metric-label">⚡ 功率</div>
             <div class="metric-values">{{ comparison.ability.power_trend.current|int }}W <span class="vs-badge">VS</span> {{ comparison.ability.power_trend.history_median|int }}W</div>
-            <div class="metric-trend"><span class="trend-badge {{ 'neutral' if comparison.ability.power_trend.verdict == '持平' else ('good' if (comparison.ability.power_trend.diff > 0) else 'bad') }}">{{ comparison.ability.power_trend.verdict }}</span></div>
+            <div class="metric-trend">{% if desc_only %}<span class="trend-badge warn">仅作描述</span>{% else %}<span class="trend-badge {{ 'neutral' if comparison.ability.power_trend.verdict == '持平' else ('good' if (comparison.ability.power_trend.diff > 0) else 'bad') }}">{{ comparison.ability.power_trend.verdict }}</span>{% endif %}</div>
         </div>
         {% endif %}
         {% endif %}
@@ -442,19 +470,22 @@ ANALYSIS_HTML_TEMPLATE = """
         <div class="comparison-row">
             <div class="metric-label">📐 垂直振幅比</div>
             <div class="metric-values">{{ comparison.economy.vr_trend.current|round(1) }}% <span class="vs-badge">VS</span> {{ comparison.economy.vr_trend.history_median|round(1) }}%</div>
-            <div class="metric-trend"><span class="trend-badge {{ 'neutral' if comparison.economy.vr_trend.verdict == '持平' else ('good' if (comparison.economy.vr_trend.diff < 0) else 'bad') }}">{{ comparison.economy.vr_trend.verdict }}</span></div>
+            <div class="metric-trend">{% if desc_only %}<span class="trend-badge warn">仅作描述</span>{% else %}<span class="trend-badge {{ 'neutral' if comparison.economy.vr_trend.verdict == '持平' else ('good' if (comparison.economy.vr_trend.diff < 0) else 'bad') }}">{{ comparison.economy.vr_trend.verdict }}</span>{% endif %}</div>
         </div>
         {% endif %}
         {% if comparison.economy.get('hr_pace_ratio') %}
         <div class="comparison-row">
             <div class="metric-label">⚡ 效率 <span style="color:#999;font-size:11px;">(m/h)/bpm</span></div>
             <div class="metric-values">{{ comparison.economy.hr_pace_ratio.current|fmt2 }} <span class="vs-badge">VS</span> {{ comparison.economy.hr_pace_ratio.history_median|fmt2 }}</div>
-            <div class="metric-trend"><span class="trend-badge {{ 'neutral' if comparison.economy.hr_pace_ratio.verdict == '持平' else ('good' if (comparison.economy.hr_pace_ratio.diff > 0) else 'bad') }}">{{ comparison.economy.hr_pace_ratio.verdict }}</span></div>
+            <div class="metric-trend">{% if desc_only %}<span class="trend-badge warn">仅作描述</span>{% else %}<span class="trend-badge {{ 'neutral' if comparison.economy.hr_pace_ratio.verdict == '持平' else ('good' if (comparison.economy.hr_pace_ratio.diff > 0) else 'bad') }}">{{ comparison.economy.hr_pace_ratio.verdict }}</span>{% endif %}</div>
         </div>
         {% endif %}
         {% endif %}
         
-        <p style="text-align:right;color:#999;font-size:12px;margin-top:16px;">有效样本{{ comparison.sample_size }}个</p>
+        <p style="text-align:right;color:#999;font-size:12px;margin-top:16px;">{% if comparison.get('comparison_kind') == 'same_distance_race_history' %}参照池共 {{ comparison.sample_size }} 场同距离历史比赛（跨全年，不限温区/赛道条件）· 成绩/执行比较允许，纯能力结论禁止{% elif comparison.get('baseline_window') == 'all_history' %}基线池共 {{ comparison.sample_size }} 次（跨全年，不限温区）{% if comparison.get('near_subset_size') %} · 距离相近子集 {{ comparison.near_subset_size }} 次{% endif %}{% else %}有效样本{{ comparison.sample_size }}个{% if comparison.get('baseline_scope') == 'all_temp' %} ·跨温区基线{% endif %}{% endif %}</p>
+        {% else %}
+        <p style="color:#999;font-size:13px;">无法形成同类型基线：{{ comparison.get('message') or '样本不足' }}。本节无数值可展示；下方「状态与趋势」中的短期、长期等模块独立计算。</p>
+        {% endif %}
     </div>
     {% endif %}
     
@@ -470,16 +501,25 @@ ANALYSIS_HTML_TEMPLATE = """
         {% set st = comparison.short_term %}
         <div class="status-row">
             <span class="status-label">  心率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_hr == '持平' else ('good' if '轻松' in st.verdict_hr else 'bad') }}">{{ st.verdict_hr }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('hr_current') is not none and st.get('hr_baseline') is not none %}　当前 {{ st.get('hr_current')|int }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('hr_baseline')|int }}（{{ (st.get('hr_current') - st.get('hr_baseline'))|signed }}）{% endif %}</span>
+            {% set v = st.get('verdict_hr') %}
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if not v else ('neutral' if v == '持平' else ('good' if '轻松' in v else 'bad')) }}">{{ v if v else '样本有限' }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('hr_current') is not none and st.get('hr_baseline') is not none %}　当前 {{ st.get('hr_current')|int }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('hr_baseline')|int }}（{{ (st.get('hr_current') - st.get('hr_baseline'))|signed }}）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  配速</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_pace == '持平' else ('good' if '快' in st.verdict_pace else 'bad') }}">{{ st.verdict_pace }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('pace_current_sec') is not none and st.get('pace_baseline_sec') is not none %}　当前 {{ st.get('pace_current_sec')|format_pace }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('pace_baseline_sec')|format_pace }}（{{ (st.get('pace_current_sec') - st.get('pace_baseline_sec'))|signed }} 秒）{% endif %}</span>
+            {% set v = st.get('verdict_pace') %}
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if not v else ('neutral' if v == '持平' else ('good' if '快' in v else 'bad')) }}">{{ v if v else '样本有限' }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('pace_current_sec') is not none and st.get('pace_baseline_sec') is not none %}　当前 {{ st.get('pace_current_sec')|format_pace }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('pace_baseline_sec')|format_pace }}（{{ (st.get('pace_current_sec') - st.get('pace_baseline_sec'))|signed }} 秒）{% endif %}</span>
         </div>
         <div class="status-row">
             <span class="status-label">  效率</span>
-            <span class="status-value"><span class="trend-badge {{ 'neutral' if st.verdict_efficiency == '持平' else ('good' if '经济' in st.verdict_efficiency else 'bad') }}">{{ st.verdict_efficiency }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
+            {% set v = st.get('verdict_efficiency') %}
+            <span class="status-value"><span class="trend-badge {{ 'neutral' if not v else ('neutral' if v == '持平' else ('good' if '经济' in v else 'bad')) }}">{{ v if v else '样本有限' }}</span>{% if st.get('baseline_scope') == 'all_temp' %}<span style="color:#999;font-size:11px;"> ·跨温区基线</span>{% endif %}{% if st.get('eff_current') is not none and st.get('eff_baseline') is not none %}　当前 {{ st.get('eff_current')|fmt2 }} vs 近{{ st.get('sample_size') }}次中位 {{ st.get('eff_baseline')|fmt2 }}（{{ '+' if (st.get('eff_current') - st.get('eff_baseline')) > 0 else '' }}{{ (st.get('eff_current') - st.get('eff_baseline'))|fmt2 }}）{% endif %}</span>
         </div>
+        {% if st.get('verdict_allowed') == false and st.get('evidence_level') == 'descriptive' %}
+        <div class="status-row">
+            <span class="status-label"></span>
+            <span class="status-value" style="color:#999;font-size:11px;">{{ st.get('evidence_reason') or '样本有限，仅作描述' }}</span>
+        </div>
+        {% endif %}
         {% elif comparison.get('short_term') %}
         <div class="status-row">
             <span class="status-label">今日状态</span>
@@ -529,7 +569,7 @@ ANALYSIS_HTML_TEMPLATE = """
         {% if comparison.get('percentile') %}
         <div class="status-row">
             <span class="status-label">历史排名</span>
-            <span class="status-value"><span class="trend-badge {{ 'good' if comparison.percentile.value >= 75 else ('warn' if comparison.percentile.value >= 25 else 'bad') }}">{{ comparison.percentile.rank_label }}</span>（超过 {{ comparison.percentile.value|int }}% 的相似跑步）</span>
+            <span class="status-value"><span class="trend-badge {{ 'good' if comparison.percentile.value >= 75 else ('warn' if comparison.percentile.value >= 25 else 'bad') }}">{{ comparison.percentile.rank_label }}</span>（{{ comparison.percentile.sample_size }} 次同类型，超过 {{ comparison.percentile.value|int }}%）</span>
         </div>
         {% endif %}
         
@@ -587,17 +627,20 @@ class AnalysisReportGenerator:
                  lap_count: int = 0, pa_hr: dict = None, pa_hr_history: list = None,
                  model_name: str = 'AI模型') -> str:
         """生成 HTML 报告
-        
+
         Args:
             analysis_data: DeepRunAnalyzer.analyze() 返回的结果
             llm_report: LLM 生成的文字报告
             lap_pace_chart_html: 分圈配速图表 HTML（可选）
             lap_hr_chart_html: 分圈心率图表 HTML（可选）
             lap_count: 分圈数量（可选）
-            
+            pa_hr: 当前活动 Pa:Hr 结果（带 scope/segment_laps 段落说明）
+            pa_hr_history: Pa:Hr 历史趋势图（可选）
+
         Returns:
             HTML 文件路径
         """
+        pa_hr_context = analysis_data.get('pa_hr_context') or {}
         summary = analysis_data.get('summary', {})
         intensity = analysis_data.get('intensity', {})
         efficiency = analysis_data.get('efficiency', {})
@@ -643,7 +686,19 @@ class AnalysisReportGenerator:
             'lap_count': lap_count,
             'lap_baseline_note': (analysis_data.get('laps') or {}).get('baseline_note', ''),
             'lap_sample_size': (analysis_data.get('laps') or {}).get('sample_size', 0),
+            # 5.0.1 F1 4.4：历史中位线不可用时的明确原因标注
+            'lap_median_available': any(
+                (h or {}).get('pace_sec') is not None
+                for h in ((analysis_data.get('laps') or {}).get('history_median') or [])),
+            'lap_partial_median': any(
+                (h or {}).get('pace_sec') is not None
+                for h in ((analysis_data.get('laps') or {}).get('history_median') or [])) and not all(
+                (h or {}).get('pace_sec') is not None
+                for h in ((analysis_data.get('laps') or {}).get('history_median') or [])),
             'pa_hr': pa_hr,
+            'pa_hr_context': pa_hr_context,
+            'pa_hr_scope_label': self._pa_hr_scope_label(pa_hr, pa_hr_context),
+            'pa_hr_na_reason': self._pa_hr_na_reason(pa_hr_context),
             'pa_hr_history': pa_hr_history,
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
             'version': load_version(),
@@ -669,6 +724,27 @@ class AnalysisReportGenerator:
         logger.info(f"深度分析报告已生成: {html_path}")
         return str(html_path)
     
+    @staticmethod
+    def _pa_hr_scope_label(pa_hr: dict, pa_hr_context: dict) -> str:
+        """Pa:Hr 段落说明：「整场」或「人工工作段第 X—Y 圈」"""
+        if not pa_hr:
+            return ''
+        segment = pa_hr.get('segment_laps') or (pa_hr_context or {}).get('segment_laps')
+        if pa_hr.get('scope') == 'manual_segment' and segment:
+            return f'人工工作段第 {segment[0]}—{segment[1]} 圈'
+        return '整场'
+
+    @staticmethod
+    def _pa_hr_na_reason(pa_hr_context: dict) -> str:
+        """Pa:Hr 不适用时的简短原因（空串表示不适用或已计算）"""
+        if not pa_hr_context or pa_hr_context.get('scope') != 'not_applicable':
+            return ''
+        return {
+            'missing_manual_segment': '节奏跑缺少人工指定工作段，本次不计算 Pa:Hr',
+            'interval_not_applicable': '间歇跑为工作/恢复交替结构，默认不计算整场 Pa:Hr',
+            'insufficient_lap_data': '人工工作段有效数据不足（需 ≥3 km 且有心率），本次不计算 Pa:Hr',
+        }.get(pa_hr_context.get('reason'), str(pa_hr_context.get('reason', '')))
+
     def _eval_class(self, eval_text: str) -> str:
         mapping = {'优秀': 'excellent', '良好': 'good', '一般': 'normal', '暂无数据': 'missing'}
         return mapping.get(eval_text, 'poor')

@@ -1,0 +1,78 @@
+# PowerFun 5.0.2 F5：结构化比赛计划（按比赛日期关联，可选配置）
+# 来源：docs/training/2026-heng-dian-half-marathon.md 第七节（1:48 保守配速表）
+# 纪律：只由 src/race_plans.py 读取校验；不修改 activity_overrides.toml 的人工课型语义；
+#       配置内容进入 analysis_hash，修改计划后旧 LLM 缓存不得误命中。
+schema_version = 1
+
+[races."2026-11-15"]
+name = "横店半程马拉松"
+category = "half_marathon"
+target = "1:48"
+strategy = "前7km克制，15km检查后再决定是否渐进提速"
+weather_rule = "气温>18°C或湿度>75%时整体降3-5秒/km，目标放宽至1:49-1:50"
+heat_threshold_c = 18.0
+heat_pace_penalty_min_sec = 3
+heat_pace_penalty_max_sec = 5
+heat_adjusted_target = "1:49-1:50"
+# 配置未提供湿度阈值字段：湿度缺失时内核明确「未参与判断」，不得由模型自行估算
+
+# 六段配速（赛段配速区间，秒/km；末段含渐进提速空间）
+[[races."2026-11-15".segments]]
+start_km = 1
+end_km = 2
+pace_min_sec = 310
+pace_max_sec = 312
+note = "能完整说话，不看人群不抢速"
+
+[[races."2026-11-15".segments]]
+start_km = 3
+end_km = 7
+pace_min_sec = 306
+pace_max_sec = 308
+note = "全场纪律核心段，只许慢不许快"
+
+[[races."2026-11-15".segments]]
+start_km = 8
+end_km = 12
+pace_min_sec = 305
+pace_max_sec = 307
+note = "稳定巡航，按计划补水"
+
+[[races."2026-11-15".segments]]
+start_km = 13
+end_km = 17
+pace_min_sec = 304
+pace_max_sec = 306
+note = "体感检查，疲劳明显则维持不提速"
+
+[[races."2026-11-15".segments]]
+start_km = 18
+end_km = 21
+pace_min_sec = 302
+pace_max_sec = 305
+note = "18-20km有余量再渐进（5:02-5:05），末段可提到4:55-5:00，不在维持到终点"
+
+# 检查点（未达标及时降档，不后半程追补）
+[[races."2026-11-15".checkpoints]]
+distance_km = 5
+anchor_sec = 1535
+upper_sec = 1570
+action = "只慢不快，不追"
+
+[[races."2026-11-15".checkpoints]]
+distance_km = 10
+anchor_sec = 3070
+upper_sec = 3110
+action = "维持当前配速即可"
+
+[[races."2026-11-15".checkpoints]]
+distance_km = 15
+anchor_sec = 4605
+upper_sec = 4665
+action = "降档：目标改 1:49-1:50 完赛"
+
+[[races."2026-11-15".checkpoints]]
+distance_km = 20
+anchor_sec = 6140
+upper_sec = 6210
+action = "守住即达标"

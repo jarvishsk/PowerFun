@@ -24,6 +24,11 @@ MIGRATION_BASELINE = {
 # 已验证增量：正式写入并逐字段验收通过的活动（id、日期、分圈行数）
 VERIFIED_INCREMENTS = [
     {'activity_id': 660164388, 'date': '2026-11-08', 'lap_rows': 17},
+    {'activity_id': 660460268, 'date': '2026-11-09', 'lap_rows': 16},
+    {'activity_id': 661585068, 'date': '2026-11-12', 'lap_rows': 17},
+    # 登记依据：5.0 发布批次（2026-11-13）正式写入 11-15 横店半马 662381792，
+    # 逐字段验收通过（主表 1 行、分圈 22 行、深析 HTML 与 LLM 缓存各 +1）。
+    {'activity_id': 662381792, 'date': '2026-11-15', 'lap_rows': 22},
 ]
 
 
